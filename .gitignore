@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+ledger_data.json
+error_log.txt
+.venv/
+venv/
