@@ -325,6 +325,32 @@ with tab_vendors:
                         st.success("Added.")
                         st.rerun()
     with col2:
+        with st.expander("Update a vendor price"):
+            if data["vendors"]:
+                v_labels = {v["id"]: f"{ing_name(data, v['ingredientId'])} — {v['vendorName']} ({v.get('town') or 'n/a'})" for v in data["vendors"]}
+                edit_vid = st.selectbox("Vendor row", options=list(v_labels), format_func=lambda i: v_labels[i], key="vendor_edit_pick")
+                cur = next(v for v in data["vendors"] if v["id"] == edit_vid)
+                with st.form(f"vendor_edit_form_{edit_vid}"):
+                    e_name = st.text_input("Vendor Name", value=cur["vendorName"])
+                    e_town = st.text_input("Town", value=cur.get("town", ""))
+                    e_price_raw = st.text_input("Price (blank = TBD)", value="" if cur.get("price") is None else f"{cur['price']:g}")
+                    stock_opts = ["unknown", "available", "out"]
+                    e_stock = st.selectbox("Stock", stock_opts, index=stock_opts.index(cur.get("stock", "unknown")) if cur.get("stock", "unknown") in stock_opts else 0)
+                    e_note = st.text_input("Note", value=cur.get("note", ""))
+                    if st.form_submit_button("Save changes"):
+                        try:
+                            new_price = None if not e_price_raw.strip() else max(0.0, float(e_price_raw.replace("$", "")))
+                        except ValueError:
+                            st.error("Price must be a number, or blank for TBD.")
+                        else:
+                            if not e_name.strip():
+                                st.error("Vendor name is required.")
+                            else:
+                                cur.update({"vendorName": e_name.strip(), "town": e_town.strip(), "price": new_price,
+                                            "stock": e_stock, "note": e_note.strip()})
+                                save_data(data)
+                                st.success("Saved.")
+                                st.rerun()
         with st.expander("Delete a vendor price"):
             if data["vendors"]:
                 labels = {v["id"]: f"{ing_name(data, v['ingredientId'])} — {v['vendorName']} ({v.get('town') or 'n/a'})" for v in data["vendors"]}

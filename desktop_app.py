@@ -871,7 +871,7 @@ class LedgerApp(tk.Tk):
     def _build_vendors(self):
         top = ttk.Frame(self.tab_vendors, padding=(10, 10, 10, 0))
         top.pack(fill="x")
-        ttk.Label(top, text="Cheapest known price is marked automatically.", foreground=INK_DIM).pack(side="left")
+        ttk.Label(top, text="Double-click Vendor, Town, Price, Stock or Note to edit in place — Enter saves, Esc cancels. ★ = cheapest.", foreground=INK_DIM).pack(side="left")
         ttk.Button(top, text="Add Vendor Price", command=lambda: VendorDialog(self)).pack(side="right", padx=4)
         ttk.Button(top, text="Delete Selected", command=self._delete_selected_vendor).pack(side="right", padx=4)
 
@@ -880,6 +880,55 @@ class LedgerApp(tk.Tk):
             {"Ingredient": 140, "Vendor": 150, "Note": 220}, height=18,
         )
         frame.pack(fill="both", expand=True, padx=10, pady=10)
+        self.vendor_tree.bind("<Double-1>", self._vendor_cell_click)
+
+    def _vendor_cell_click(self, event):
+        tree = self.vendor_tree
+        row_id = tree.identify_row(event.y)
+        col = tree.identify_column(event.x)
+        v = next((x for x in self.data["vendors"] if x["id"] == row_id), None)
+        if not v:
+            return
+        field = {"#2": "vendorName", "#3": "town", "#4": "price", "#5": "stock", "#6": "note"}.get(col)
+        if not field:
+            return
+
+        def save():
+            eng.save_data(self.data)
+            self.refresh_all()
+
+        if field == "stock":
+            options = ["unknown", "available", "out"]
+
+            def commit_stock(chosen):
+                v["stock"] = chosen if chosen in options else "unknown"
+                save()
+            inline_edit_combobox(tree, row_id, col, options, v.get("stock", "unknown"), commit_stock)
+        elif field == "price":
+            initial = "" if v.get("price") is None else f"{v['price']:g}"
+
+            def commit_price(raw):
+                text = raw.replace("$", "").strip()
+                if text == "" or text.lower() == "tbd":
+                    v["price"] = None
+                else:
+                    try:
+                        v["price"] = max(0.0, float(text))
+                    except ValueError:
+                        messagebox.showerror("Invalid price", "Price must be a number, or blank for TBD.")
+                        return
+                save()
+            inline_edit_entry(tree, row_id, col, initial, commit_price)
+        else:
+            initial = v.get(field, "") or ""
+
+            def commit_text(raw):
+                text = raw.strip()
+                if field == "vendorName" and not text:
+                    return
+                v[field] = text
+                save()
+            inline_edit_entry(tree, row_id, col, initial, commit_text)
 
     def _delete_selected_vendor(self):
         sel = self.vendor_tree.selection()
