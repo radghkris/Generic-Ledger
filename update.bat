@@ -2,9 +2,25 @@
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-if not exist ".git" (
-    echo This folder isn't a clone of the repo yet.
-    echo Clone it first, then run this script from inside that folder.
+echo Updating the copy of the ledger in:
+echo   %CD%
+echo.
+
+where git >nul 2>&1
+if errorlevel 1 (
+    echo Git isn't installed on this computer, or isn't on PATH.
+    echo Install it from https://git-scm.com/download/win then try again.
+    echo.
+    pause
+    exit /b 1
+)
+
+git rev-parse --is-inside-work-tree >nul
+if errorlevel 1 (
+    echo.
+    echo The folder above isn't a git clone, so there is nothing to update.
+    echo Run update.bat from inside the folder that "git clone" created -
+    echo the one that contains a hidden .git folder.
     echo.
     pause
     exit /b 1
@@ -27,6 +43,12 @@ if defined _has_changes (
 
 echo Pulling the latest files from GitHub...
 git pull
+if errorlevel 1 (
+    echo.
+    echo The update failed - see the message above.
+    pause
+    exit /b 1
+)
 
 echo.
 echo Up to date.
