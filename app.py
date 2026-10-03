@@ -26,7 +26,7 @@ with tab_dash:
     metrics = {rid: recipe_metrics(data, r) for rid, r in recipes}
     active_n = sum(1 for _, r in recipes if r["active"])
     over_cap = sum(1 for rid, _ in recipes if metrics[rid]["overCap"])
-    problematic = sum(1 for rid, _ in recipes if metrics[rid]["tier"] == "bad")
+    problematic = sum(1 for rid, _ in recipes if metrics[rid]["tier"] == "problematic")
     plan = compute_plan(data)
     short_lines = sum(1 for s in plan["shortages"] if s["shortage"] > 0)
 
@@ -53,13 +53,13 @@ with tab_dash:
         s = data["settings"]
         # st.caption renders markdown, where a pair of literal "$" is read as LaTeX math — escape them.
         md_money = lambda n: fmt_money(n).replace("$", "\\$")
-        st.caption(f"Cap: {md_money(s['priceCap'])} · Tight: over {md_money(s['thresholdHealthy'])} · Problematic: over {md_money(s['thresholdTight'])}")
-        watch = [(rid, r) for rid, r in recipes if metrics[rid]["tier"] != "good" or metrics[rid]["overCap"]]
+        st.caption(f"Max price: {md_money(s['priceCap'])} · Problematic: ≤ {s['marginProblematicMaxPercent']:g}% margin · Good: ≥ {s['marginGoodPercent']:g}% · Healthy: ≥ {s['marginHealthyPercent']:g}%")
+        watch = [(rid, r) for rid, r in recipes if metrics[rid]["tier"] in ("tight", "problematic") or metrics[rid]["overCap"]]
         if watch:
             df = pd.DataFrame([{
                 "Recipe": r["name"], "Cost/Item": fmt_money(metrics[rid]["costPerItem"]),
                 "Sale Price": fmt_money(r["salePrice"]),
-                "Flag": ("OVER MAX, " if metrics[rid]["overCap"] else "") + ("problematic" if metrics[rid]["tier"] == "bad" else "tight"),
+                "Flag": ("OVER MAX, " if metrics[rid]["overCap"] else "") + metrics[rid]["tier"],
             } for rid, r in watch])
             st.dataframe(df, hide_index=True, use_container_width=True)
         else:
@@ -83,7 +83,7 @@ with tab_recipes:
             "Sale Price": fmt_money(r["salePrice"]) + (" (over max)" if m["overCap"] else ""),
             "Profit": fmt_money(m["profit"]),
             "Margin": "—" if m["margin"] is None else f"{m['margin']*100:.1f}%",
-            "Tier": {"good": "healthy", "warn": "tight", "bad": "problematic"}[m["tier"]],
+            "Tier": m["tier"],
             "Active": r["active"],
         })
     recipes_df = pd.DataFrame(rows)
@@ -485,15 +485,22 @@ with tab_settings:
     with st.form("settings_pricing"):
         s = data["settings"]
         cap = st.number_input("Maximum sale price", min_value=0.0, step=0.01, value=float(s["priceCap"]), format="%.2f")
-        healthy = st.number_input("Healthy Threshold (cost below)", min_value=0.0, step=0.01, value=float(s["thresholdHealthy"]), format="%.2f")
-        tight = st.number_input("Problematic Threshold (cost above)", min_value=0.0, step=0.01, value=float(s["thresholdTight"]), format="%.2f")
+        st.markdown("**Recipe grade by profit margin**")
+        healthy = st.number_input("Healthy at or above margin %", min_value=0.0, max_value=100.0, step=1.0, value=float(s["marginHealthyPercent"]))
+        good = st.number_input("Good at or above margin %", min_value=0.0, max_value=100.0, step=1.0, value=float(s["marginGoodPercent"]))
+        problematic = st.number_input("Problematic at or below margin %", min_value=0.0, max_value=100.0, step=1.0, value=float(s["marginProblematicMaxPercent"]))
+        st.caption("Anything between Problematic and Good is Tight.")
         tax = st.number_input("Tax Rate % (reduces revenue used for profit calc)", min_value=0.0, step=0.5, value=float(s.get("taxRatePercent", 0.0)), format="%.2f")
         st.caption("Placeholder until you know your actual rate — 0% changes nothing.")
         if st.form_submit_button("Save pricing rules"):
-            s["priceCap"], s["thresholdHealthy"], s["thresholdTight"], s["taxRatePercent"] = cap, healthy, tight, tax
-            save_data(data)
-            st.success("Saved.")
-            st.rerun()
+            if not (problematic < good <= healthy):
+                st.error("The cutoffs need to run from low to high: Problematic < Good ≤ Healthy.")
+            else:
+                s["priceCap"], s["taxRatePercent"] = cap, tax
+                s["marginHealthyPercent"], s["marginGoodPercent"], s["marginProblematicMaxPercent"] = healthy, good, problematic
+                save_data(data)
+                st.success("Saved.")
+                st.rerun()
 
     st.subheader("Labor & Overhead")
     st.caption("Added to every craft's cost — covers processing time and staffing overhead.")

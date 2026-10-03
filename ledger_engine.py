@@ -45,7 +45,8 @@ SEED = {
     "plan": {"targets": {"sample-product": {"enabled": True, "qty": 20}}},
     "settings": {
         "businessName": "My Business", "tagline": "Product costing & production planner", "appIcon": "\U0001F4D2",
-        "priceCap": 5.00, "thresholdHealthy": 1.00, "thresholdTight": 2.00,
+        "priceCap": 5.00,
+        "marginHealthyPercent": 80, "marginGoodPercent": 65, "marginProblematicMaxPercent": 20,
         "laborRatePer30Min": 0.0, "processTimeMinutes": 0.0, "taxRatePercent": 0.0,
     },
 }
@@ -170,13 +171,30 @@ def recipe_metrics(data, recipe):
     profit = net_sale - cost_per_item
     margin = (profit / net_sale) if net_sale > 0 else None
     s = data["settings"]
-    tier = "good"
-    if cost_per_item > s["thresholdTight"]:
-        tier = "bad"
-    elif cost_per_item > s["thresholdHealthy"]:
-        tier = "warn"
+    tier = margin_tier(s, margin)
     return {"craft": craft, "costPerItem": cost_per_item, "profit": profit, "margin": margin,
             "tier": tier, "overCap": sale > s["priceCap"], "netSale": net_sale}
+
+
+def margin_tier(settings, margin):
+    """Grade a profit margin (a fraction, 0.65 = 65%) into one of four tiers using
+    the three cutoffs in Settings:
+        healthy      at or over the healthy cutoff                       (default 80% and up)
+        good         at or over the good cutoff                          (default 65% up to 80%)
+        tight        above the problematic cutoff, below the good one    (default 20% up to 65%)
+        problematic  at or under the problematic cutoff, or no revenue   (default 20% and under)
+    The margin is rounded to one decimal first so the tier always agrees with the
+    percentage shown on screen."""
+    if margin is None:
+        return "problematic"
+    pct = round(margin * 100, 1)
+    if pct <= settings.get("marginProblematicMaxPercent", 20):
+        return "problematic"
+    if pct >= settings.get("marginHealthyPercent", 80):
+        return "healthy"
+    if pct >= settings.get("marginGoodPercent", 65):
+        return "good"
+    return "tight"
 
 
 def compute_plan(data):

@@ -36,13 +36,13 @@ Everything you enter is saved to `ledger_data.json`, created next to the scripts
 
 ## What it does
 
-- **Dashboard** — shortages weighted by how many active recipes need them ("Acquire Next"), and recipes flagged as tight/problematic cost or over your maximum sale price.
+- **Dashboard** — shortages weighted by how many active recipes need them ("Acquire Next"), and recipes graded tight or problematic by profit margin (cutoffs are editable in Settings) or over your maximum sale price.
 - **Recipes** — ingredients, craft yield, sale price, free-text category; cost, profit and margin computed automatically, including labor. Toggle a recipe active/inactive right from the list.
 - **Ingredients & Conversions** — unit costs, plus raw-to-finished conversions (e.g. bulk stock portioned into sellable units) that resolve automatically through the cost engine. Any ingredient can be marked "not bought from a vendor" with its own flat cost and a custom acquisition note (grow it, make it in-house, forage it — whatever fits your business) instead of a vendor price.
 - **Vendors** — multiple vendor prices per ingredient across locations; cheapest is flagged automatically.
 - **Inventory** — quantities on hand, and an optional preferred supplier per ingredient. Edited in place in the table — no popups.
 - **Planner** — set target quantities per recipe, then **What To Order** tells you exactly what to buy (and from where), make in-house, or otherwise acquire, walking through any conversions along the way. **Mark Made** deducts a completed run's ingredients from Inventory and reduces its remaining target.
-- **Settings** — business branding, maximum sale price, cost-tier thresholds, labor/overhead cost per unit of production time, and a tax-rate placeholder.
+- **Settings** — business branding, maximum sale price, margin grade cutoffs (healthy / good / tight / problematic), labor/overhead cost per unit of production time, and a tax-rate placeholder.
 
 ## Customizing for your business
 

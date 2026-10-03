@@ -92,9 +92,10 @@ def stripe_tree(tree):
 
 
 def configure_tier_tags(tree):
-    tree.tag_configure("tier_good", background=GOOD_BG, foreground=GOOD)
-    tree.tag_configure("tier_warn", background=WARN_BG, foreground=WARN)
-    tree.tag_configure("tier_bad", background=BAD_BG, foreground=BAD)
+    tree.tag_configure("tier_healthy", background=GOOD_BG, foreground=GOOD)
+    tree.tag_configure("tier_good", background=SURFACE2, foreground=GOOD)
+    tree.tag_configure("tier_tight", background=WARN_BG, foreground=WARN)
+    tree.tag_configure("tier_problematic", background=BAD_BG, foreground=BAD)
 
 
 def make_tree(parent, columns, widths=None, height=10, sortable=True):
@@ -573,17 +574,26 @@ class SettingsFrame(ttk.Frame):
         ttk.Label(pricing, text="Maximum sale price").grid(row=0, column=0, sticky="w")
         self.cap_var = tk.StringVar(value=str(s["priceCap"]))
         ttk.Entry(pricing, textvariable=self.cap_var, width=10).grid(row=0, column=1, padx=6)
-        ttk.Label(pricing, text="Healthy threshold (cost below)").grid(row=1, column=0, sticky="w")
-        self.healthy_var = tk.StringVar(value=str(s["thresholdHealthy"]))
-        ttk.Entry(pricing, textvariable=self.healthy_var, width=10).grid(row=1, column=1, padx=6)
-        ttk.Label(pricing, text="Problematic threshold (cost above)").grid(row=2, column=0, sticky="w")
-        self.tight_var = tk.StringVar(value=str(s["thresholdTight"]))
-        ttk.Entry(pricing, textvariable=self.tight_var, width=10).grid(row=2, column=1, padx=6)
-        ttk.Label(pricing, text="Tax rate % (reduces revenue used for profit calc)").grid(row=3, column=0, sticky="w")
+        ttk.Label(pricing, text="Recipe grade by profit margin:", font=(RESOLVED["body"], 10, "bold")).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(pricing, text="Healthy at or above margin %").grid(row=2, column=0, sticky="w")
+        self.healthy_var = tk.StringVar(value=str(s.get("marginHealthyPercent", 80)))
+        ttk.Entry(pricing, textvariable=self.healthy_var, width=10).grid(row=2, column=1, padx=6)
+        ttk.Label(pricing, text="Good at or above margin %").grid(row=3, column=0, sticky="w")
+        self.good_var = tk.StringVar(value=str(s.get("marginGoodPercent", 65)))
+        ttk.Entry(pricing, textvariable=self.good_var, width=10).grid(row=3, column=1, padx=6)
+        ttk.Label(pricing, text="Problematic at or below margin %").grid(row=4, column=0, sticky="w")
+        self.tight_var = tk.StringVar(value=str(s.get("marginProblematicMaxPercent", 20)))
+        ttk.Entry(pricing, textvariable=self.tight_var, width=10).grid(row=4, column=1, padx=6)
+        self.tier_hint_var = tk.StringVar()
+        ttk.Label(pricing, textvariable=self.tier_hint_var, foreground=INK_DIM, wraplength=420, justify="left").grid(row=5, column=0, columnspan=2, sticky="w")
+        for var in (self.healthy_var, self.good_var, self.tight_var):
+            var.trace_add("write", lambda *a: self._update_tier_hint())
+        self._update_tier_hint()
+        ttk.Label(pricing, text="Tax rate % (reduces revenue used for profit calc)").grid(row=6, column=0, sticky="w", pady=(8, 0))
         self.tax_var = tk.StringVar(value=str(s.get("taxRatePercent", 0)))
-        ttk.Entry(pricing, textvariable=self.tax_var, width=10).grid(row=3, column=1, padx=6)
-        ttk.Label(pricing, text="Placeholder until you know your actual rate — 0% changes nothing.", foreground=INK_DIM).grid(row=4, column=0, columnspan=2, sticky="w")
-        ttk.Button(pricing, text="Save pricing rules", command=self._save_pricing).grid(row=5, column=0, pady=(8, 0), sticky="w")
+        ttk.Entry(pricing, textvariable=self.tax_var, width=10).grid(row=6, column=1, padx=6, pady=(8, 0))
+        ttk.Label(pricing, text="Placeholder until you know your actual rate — 0% changes nothing.", foreground=INK_DIM).grid(row=7, column=0, columnspan=2, sticky="w")
+        ttk.Button(pricing, text="Save pricing rules", command=self._save_pricing).grid(row=8, column=0, pady=(8, 0), sticky="w")
 
         labor = ttk.LabelFrame(self, text="Labor & Overhead", padding=10)
         labor.pack(fill="x", pady=(0, 10))
@@ -615,17 +625,31 @@ class SettingsFrame(ttk.Frame):
         ttk.Entry(business, textvariable=self.app_icon_var, width=6).grid(row=3, column=1, sticky="w")
         ttk.Button(business, text="Save business info", command=self._save_business).grid(row=4, column=0, pady=(8, 0), sticky="w")
 
+    def _update_tier_hint(self):
+        try:
+            h, g, p = (float(v.get()) for v in (self.healthy_var, self.good_var, self.tight_var))
+            self.tier_hint_var.set(
+                f"Problematic: {p:g}% and under  ·  Tight: over {p:g}% up to {g:g}%  ·  "
+                f"Good: {g:g}% up to {h:g}%  ·  Healthy: {h:g}% and up")
+        except ValueError:
+            self.tier_hint_var.set("Enter numbers to preview the four grades")
+
     def _save_pricing(self):
         try:
             cap = float(self.cap_var.get())
             healthy = float(self.healthy_var.get())
-            tight = float(self.tight_var.get())
+            good = float(self.good_var.get())
+            problematic = float(self.tight_var.get())
             tax = float(self.tax_var.get())
         except ValueError:
             messagebox.showerror("Invalid number", "Pricing fields must be numbers.")
             return
+        if not (problematic < good <= healthy):
+            messagebox.showerror("Check the grades", "The cutoffs need to run from low to high:\nProblematic < Good <= Healthy.")
+            return
         s = self.app.data["settings"]
-        s["priceCap"], s["thresholdHealthy"], s["thresholdTight"], s["taxRatePercent"] = cap, healthy, tight, tax
+        s["priceCap"], s["taxRatePercent"] = cap, tax
+        s["marginHealthyPercent"], s["marginGoodPercent"], s["marginProblematicMaxPercent"] = healthy, good, problematic
         eng.save_data(self.app.data)
         self.app.refresh_all()
         messagebox.showinfo("Saved", "Pricing rules saved.")
@@ -1130,7 +1154,7 @@ class LedgerApp(tk.Tk):
         metrics = {rid: eng.recipe_metrics(self.data, r) for rid, r in recipes}
         active_n = sum(1 for _, r in recipes if r["active"])
         over_cap = sum(1 for rid, _ in recipes if metrics[rid]["overCap"])
-        problematic = sum(1 for rid, _ in recipes if metrics[rid]["tier"] == "bad")
+        problematic = sum(1 for rid, _ in recipes if metrics[rid]["tier"] == "problematic")
         plan = eng.compute_plan(self.data)
         short_lines = sum(1 for s in plan["shortages"] if s["shortage"] > 0)
 
@@ -1146,9 +1170,9 @@ class LedgerApp(tk.Tk):
         self.watch_tree.delete(*self.watch_tree.get_children())
         for rid, r in recipes:
             m = metrics[rid]
-            if m["tier"] == "good" and not m["overCap"]:
+            if m["tier"] in ("healthy", "good") and not m["overCap"]:
                 continue
-            flag = ("OVER MAX, " if m["overCap"] else "") + ("problematic" if m["tier"] == "bad" else "tight")
+            flag = ("OVER MAX, " if m["overCap"] else "") + m["tier"]
             self.watch_tree.insert("", "end", values=(r["name"], eng.fmt_money(m["costPerItem"]), eng.fmt_money(r["salePrice"]), flag),
                                     tags=(f"tier_{m['tier']}",))
         stripe_tree(self.grow_tree)
@@ -1158,7 +1182,7 @@ class LedgerApp(tk.Tk):
         for rid, r in sorted(self.data["recipes"].items(), key=lambda kv: kv[1]["name"]):
             m = eng.recipe_metrics(self.data, r)
             margin = "—" if m["margin"] is None else f"{m['margin']*100:.1f}%"
-            tier = {"good": "healthy", "warn": "tight", "bad": "problematic"}[m["tier"]]
+            tier = m["tier"]
             name = r["name"] + (" ⚠️" if m["craft"]["warn"] else "")
             yield_qty = r["yieldQty"] if r.get("yieldQty", 0) > 0 else 1
             labor_per_item = m["craft"]["laborCost"] / yield_qty
