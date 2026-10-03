@@ -1,5 +1,6 @@
 import ctypes
 import sys
+import traceback
 import tkinter as tk
 import tkinter.font as tkfont
 from pathlib import Path
@@ -137,8 +138,11 @@ _WHEEL = {"bound": False}
 
 
 def _wheel_router(event):
+    live = [f for f in _SCROLL_FRAMES if f.winfo_exists()]
+    if not live:
+        return
     try:
-        under = event.widget.winfo_containing(event.x_root, event.y_root)
+        under = live[0].winfo_containing(event.x_root, event.y_root)
     except (tk.TclError, KeyError):
         return
     for frame in list(_SCROLL_FRAMES):
@@ -808,6 +812,29 @@ class SettingsFrame(ttk.Frame):
         messagebox.showinfo("Saved", "Business info saved.")
 
 
+_ERRORS_SHOWN = {"n": 0}
+
+
+def report_error(text, parent=None, title="Something went wrong", hint=""):
+    """pythonw has no console, so without this an error just looks like a blank or
+    frozen window. Show it, and also write it to stderr (run_desktop.bat saves
+    that to error_log.txt)."""
+    try:
+        if sys.stderr is not None:
+            sys.stderr.write(text + "\n")
+            sys.stderr.flush()
+    except Exception:
+        pass
+    if _ERRORS_SHOWN["n"] >= 3:      # don't bury the user if something keeps failing
+        return
+    _ERRORS_SHOWN["n"] += 1
+    body = hint or "The ledger hit an error. A copy is saved in error_log.txt next to the program."
+    try:
+        messagebox.showerror(title, body + "\n\n" + text[-1200:], parent=parent)
+    except Exception:
+        pass
+
+
 class LedgerApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -1409,6 +1436,34 @@ class LedgerApp(tk.Tk):
         self.order_total_var.set(f"Estimated spend: {eng.fmt_money(order_total)}")
 
 
-if __name__ == "__main__":
-    app = LedgerApp()
+def _tk_callback_error(self, exc, val, tb):
+    report_error("".join(traceback.format_exception(exc, val, tb)), parent=self)
+
+
+LedgerApp.report_callback_exception = _tk_callback_error
+
+
+def main():
+    try:
+        app = LedgerApp()
+    except Exception:
+        text = traceback.format_exc()
+        stray = tk._default_root
+        if stray is not None:
+            try:
+                stray.destroy()
+            except Exception:
+                pass
+        holder = tk.Tk()
+        holder.withdraw()
+        report_error(text, parent=holder, title="The ledger couldn't start",
+                     hint="The ledger couldn't start. If the details below mention ledger_data.json, "
+                          "that file may be damaged: copy it somewhere safe, delete it from this folder, "
+                          "and start again. Otherwise send this message to whoever supports you.")
+        holder.destroy()
+        return
     app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
