@@ -452,11 +452,11 @@ class VendorDialog(tk.Toplevel):
         ttk.Combobox(form, textvariable=self.ing_var, values=names_sorted, state="readonly", width=24).grid(row=0, column=1, columnspan=2, pady=2, sticky="w")
 
         ttk.Label(form, text="Vendor name").grid(row=1, column=0, sticky="w")
-        self.vendor_var = tk.StringVar()
+        self.vendor_var = tk.StringVar(value=app.data["settings"].get("lastVendorName", ""))
         ttk.Entry(form, textvariable=self.vendor_var, width=26).grid(row=1, column=1, columnspan=2, pady=2, sticky="w")
 
         ttk.Label(form, text="Town").grid(row=2, column=0, sticky="w")
-        self.town_var = tk.StringVar()
+        self.town_var = tk.StringVar(value=app.data["settings"].get("lastVendorTown", ""))
         ttk.Entry(form, textvariable=self.town_var, width=26).grid(row=2, column=1, columnspan=2, pady=2, sticky="w")
 
         ttk.Label(form, text="Price (blank = TBD)").grid(row=3, column=0, sticky="w")
@@ -489,6 +489,8 @@ class VendorDialog(tk.Toplevel):
         data["vendors"].append({"id": new_id, "ingredientId": self.name_to_id[self.ing_var.get()],
                                  "vendorName": vendor_name, "town": self.town_var.get().strip(),
                                  "price": price, "stock": self.stock_var.get()})
+        data["settings"]["lastVendorName"] = vendor_name
+        data["settings"]["lastVendorTown"] = self.town_var.get().strip()
         eng.save_data(data)
         self.app.refresh_all()
         self.destroy()
