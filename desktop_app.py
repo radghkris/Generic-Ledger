@@ -121,6 +121,117 @@ def make_tree(parent, columns, widths=None, height=10, sortable=True):
     return frame, tree
 
 
+def autowrap_toolbar(bar, label):
+    """Lets `label` wrap onto extra lines so the buttons beside it are never pushed
+    off the edge of a narrow window or a high-DPI display."""
+    def refit(_event=None):
+        others = sum(c.winfo_reqwidth() + 16 for c in bar.winfo_children() if c is not label)
+        avail = max(140, bar.winfo_width() - others - 30)
+        if str(label.cget("wraplength")) != str(avail):
+            label.configure(wraplength=avail, justify="left")
+    bar.bind("<Configure>", refit)
+
+
+_SCROLL_FRAMES = []
+_WHEEL = {"bound": False}
+
+
+def _wheel_router(event):
+    try:
+        under = event.widget.winfo_containing(event.x_root, event.y_root)
+    except (tk.TclError, KeyError):
+        return
+    for frame in list(_SCROLL_FRAMES):
+        if not frame.winfo_exists():
+            _SCROLL_FRAMES.remove(frame)
+        elif frame.winfo_ismapped() and under is not None and (under == frame or str(under).startswith(str(frame) + ".")):
+            frame.scroll_by(event)
+            return
+
+
+def _focus_router(event):
+    """Tabbing/clicking into a field that's scrolled out of view scrolls it into view."""
+    path = str(event.widget)
+    for frame in list(_SCROLL_FRAMES):
+        if frame.winfo_exists() and path.startswith(str(frame) + "."):
+            frame.reveal(event.widget)
+            return
+
+
+class ScrollFrame(ttk.Frame):
+    """A frame that scrolls when its contents are taller (or wider) than the room
+    it's given. Put widgets in `.body`. The mouse wheel works anywhere over it
+    (hold Shift for sideways)."""
+
+    def __init__(self, parent, max_height=None):
+        super().__init__(parent)
+        self.max_height = max_height      # cap the visible height (then scroll); None = fill the space given
+        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0, background=BG, yscrollincrement=24, xscrollincrement=24)
+        self.vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.hsb = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=self.vsb.set, xscrollcommand=self.hsb.set)
+        self.body = ttk.Frame(self.canvas)
+        self._window = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.vsb.grid(row=0, column=1, sticky="ns")
+        self.hsb.grid(row=1, column=0, sticky="ew")
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
+        self._needs_v = self._needs_h = False
+        self.body.bind("<Configure>", self._sync)
+        self.bind("<Configure>", self._sync)
+        if not _WHEEL["bound"]:
+            _WHEEL["bound"] = True
+            self.bind_all("<MouseWheel>", _wheel_router, add="+")
+            self.bind_all("<FocusIn>", _focus_router, add="+")
+            # otherwise wheeling past a dropdown silently changes its selection
+            self.unbind_class("TCombobox", "<MouseWheel>")
+        _SCROLL_FRAMES.append(self)
+
+    def _sync(self, _event=None):
+        total_w, total_h = self.winfo_width(), self.winfo_height()
+        if total_w <= 1:
+            return
+        body_w, body_h = self.body.winfo_reqwidth(), self.body.winfo_reqheight()
+        if self.max_height:
+            self.canvas.configure(height=min(body_h, self.max_height))
+            self._needs_v = body_h > self.max_height
+        else:
+            self._needs_v = body_h > total_h
+        self._needs_h = body_w > total_w - 18
+        (self.vsb.grid if self._needs_v else self.vsb.grid_remove)()
+        (self.hsb.grid if self._needs_h else self.hsb.grid_remove)()
+        canvas_w = max(self.canvas.winfo_width(), 1)
+        self.canvas.itemconfigure(self._window, width=max(canvas_w, body_w))
+        self.canvas.configure(scrollregion=(0, 0, max(canvas_w, body_w), max(self.canvas.winfo_height(), body_h)))
+        if not self._needs_v:
+            self.canvas.yview_moveto(0)
+        if not self._needs_h:
+            self.canvas.xview_moveto(0)
+
+    def reveal(self, widget):
+        if not self._needs_v:
+            return
+        view_h = self.canvas.winfo_height()
+        total_h = max(self.body.winfo_reqheight(), view_h)
+        top = widget.winfo_rooty() - self.body.winfo_rooty()
+        bottom = top + widget.winfo_height()
+        view_top = self.canvas.canvasy(0)
+        if top < view_top:
+            self.canvas.yview_moveto(max(0, top - 8) / total_h)
+        elif bottom > view_top + view_h:
+            self.canvas.yview_moveto(min(total_h - view_h, bottom + 8 - view_h) / total_h)
+
+    def scroll_by(self, event):
+        notches = max(1, abs(event.delta) // 120)
+        steps = -notches if event.delta > 0 else notches
+        if event.state & 0x1:
+            if self._needs_h:
+                self.canvas.xview_scroll(steps * 2, "units")
+        elif self._needs_v:
+            self.canvas.yview_scroll(steps * 2, "units")
+
+
 class IngredientLinesEditor(ttk.Frame):
     """A small editable list of (ingredient, qty) rows used inside the recipe dialog."""
 
@@ -129,15 +240,17 @@ class IngredientLinesEditor(ttk.Frame):
         self.ingredient_names = ingredient_names
         self.on_change = on_change
         self.rows = []
-        self.rows_frame = ttk.Frame(self)
-        self.rows_frame.pack(fill="x")
+        cap = int(300 * float(self.tk.call("tk", "scaling")) / 1.333)      # ~8 lines, then scroll
+        self.scroller = ScrollFrame(self, max_height=cap)
+        self.rows_frame = self.scroller.body
+        self.scroller.pack(fill="x")
         for name, qty in initial_lines:
             self._add_row(name, qty)
         if not initial_lines and ingredient_names:
             self._add_row(ingredient_names[0], 1)
-        ttk.Button(self, text="+ ingredient line", command=lambda: self._add_row(ingredient_names[0] if ingredient_names else "", 1)).pack(anchor="w", pady=(4, 0))
+        ttk.Button(self, text="+ ingredient line", command=lambda: self._add_row(ingredient_names[0] if ingredient_names else "", 1, reveal=True)).pack(anchor="w", pady=(4, 0))
 
-    def _add_row(self, name, qty):
+    def _add_row(self, name, qty, reveal=False):
         row = ttk.Frame(self.rows_frame)
         row.pack(fill="x", pady=2)
         combo = ttk.Combobox(row, values=self.ingredient_names, state="readonly", width=24)
@@ -150,6 +263,12 @@ class IngredientLinesEditor(ttk.Frame):
         remove_btn = ttk.Button(row, text="✖", width=3, command=lambda: self._remove_row(entry))
         remove_btn.pack(side="left")
         self.rows.append(entry)
+        if reveal:
+            def to_bottom():
+                self.scroller.update_idletasks()
+                self.scroller._sync()
+                self.scroller.canvas.yview_moveto(1.0)
+            self.after_idle(to_bottom)
         if self.on_change:
             combo.bind("<<ComboboxSelected>>", lambda e: self.on_change())
             qty_entry.bind("<KeyRelease>", lambda e: self.on_change())
@@ -692,8 +811,10 @@ class SettingsFrame(ttk.Frame):
 class LedgerApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.geometry("1180x720")
-        self.minsize(900, 600)
+        win_w = min(1180, max(800, self.winfo_screenwidth() - 60))
+        win_h = min(720, max(520, self.winfo_screenheight() - 120))
+        self.geometry(f"{win_w}x{win_h}")
+        self.minsize(min(900, win_w), min(600, win_h))
         self.data = eng.load_data()
 
         load_local_fonts()
@@ -757,7 +878,9 @@ class LedgerApp(tk.Tk):
         self._build_vendors()
         self._build_inventory()
         self._build_planner()
-        self.settings_frame = SettingsFrame(self.tab_settings, self)
+        self.settings_scroll = ScrollFrame(self.tab_settings)
+        self.settings_scroll.pack(fill="both", expand=True)
+        self.settings_frame = SettingsFrame(self.settings_scroll.body, self)
         self.settings_frame.pack(fill="both", expand=True)
 
         self.refresh_all()
@@ -795,13 +918,17 @@ class LedgerApp(tk.Tk):
     def _build_recipes(self):
         top = ttk.Frame(self.tab_recipes, padding=(10, 10, 10, 0))
         top.pack(fill="x")
-        ttk.Label(top, text="Double-click a recipe row to toggle Active on/off.", foreground=INK_DIM).pack(side="left")
+        hint = ttk.Label(top, text="Double-click a recipe row to toggle Active on/off.", foreground=INK_DIM)
+        hint.pack(side="left")
         ttk.Button(top, text="Add Recipe", command=lambda: RecipeDialog(self)).pack(side="right", padx=4)
         ttk.Button(top, text="Edit Selected", command=self._edit_selected_recipe).pack(side="right", padx=4)
         ttk.Button(top, text="Delete Selected", command=self._delete_selected_recipe).pack(side="right", padx=4)
+        autowrap_toolbar(top, hint)
 
         cols = ["Name", "Category", "Yield", "Labor/Item", "Craft Cost", "Cost/Item", "Sale Price", "Profit", "Margin", "Tier", "Active"]
-        frame, self.recipes_tree = make_tree(self.tab_recipes, cols, {"Name": 200}, height=16)
+        widths = {"Name": 200, "Category": 90, "Yield": 56, "Labor/Item": 92, "Craft Cost": 88, "Cost/Item": 88,
+                  "Sale Price": 112, "Profit": 76, "Margin": 72, "Tier": 96, "Active": 64}
+        frame, self.recipes_tree = make_tree(self.tab_recipes, cols, widths, height=16)
         frame.pack(fill="both", expand=True, padx=10, pady=10)
         configure_tier_tags(self.recipes_tree)
         self.recipes_tree.bind("<Double-1>", self._toggle_recipe_active)
@@ -847,7 +974,7 @@ class LedgerApp(tk.Tk):
         ttk.Button(top, text="Edit Selected", command=self._edit_selected_ingredient).pack(side="right", padx=4)
         ttk.Button(top, text="Delete Selected", command=self._delete_selected_ingredient).pack(side="right", padx=4)
 
-        frame, self.ing_tree = make_tree(self.tab_ing, ["Name", "Unit", "Cost", "Source"], {"Name": 170}, height=10)
+        frame, self.ing_tree = make_tree(self.tab_ing, ["Name", "Unit", "Cost", "Source"], {"Name": 170}, height=4)
         frame.pack(fill="both", expand=True, padx=10, pady=(6, 6))
 
         conv_top = ttk.Frame(self.tab_ing, padding=(10, 4, 10, 0))
@@ -856,8 +983,8 @@ class LedgerApp(tk.Tk):
         ttk.Button(conv_top, text="Add Conversion", command=lambda: ConversionDialog(self)).pack(side="right", padx=4)
         ttk.Button(conv_top, text="Delete Selected", command=self._delete_selected_conversion).pack(side="right", padx=4)
 
-        conv_frame, self.conv_tree = make_tree(self.tab_ing, ["Conversion", "Processing Cost"], {"Conversion": 260}, height=6)
-        conv_frame.pack(fill="both", expand=True, padx=10, pady=(6, 10))
+        conv_frame, self.conv_tree = make_tree(self.tab_ing, ["Conversion", "Processing Cost"], {"Conversion": 260}, height=4)
+        conv_frame.pack(fill="x", padx=10, pady=(6, 10))
 
     def _edit_selected_ingredient(self):
         sel = self.ing_tree.selection()
@@ -897,9 +1024,11 @@ class LedgerApp(tk.Tk):
     def _build_vendors(self):
         top = ttk.Frame(self.tab_vendors, padding=(10, 10, 10, 0))
         top.pack(fill="x")
-        ttk.Label(top, text="Double-click Vendor, Town, Price, Stock or Note to edit in place — Enter saves, Esc cancels. ★ = cheapest.", foreground=INK_DIM).pack(side="left")
+        hint = ttk.Label(top, text="Double-click Vendor, Town, Price, Stock or Note to edit in place — Enter saves, Esc cancels. ★ = cheapest.", foreground=INK_DIM)
+        hint.pack(side="left")
         ttk.Button(top, text="Add Vendor Price", command=lambda: VendorDialog(self)).pack(side="right", padx=4)
         ttk.Button(top, text="Delete Selected", command=self._delete_selected_vendor).pack(side="right", padx=4)
+        autowrap_toolbar(top, hint)
 
         frame, self.vendor_tree = make_tree(
             self.tab_vendors, ["Ingredient", "Vendor", "Town", "Price", "Stock", "Note"],
@@ -976,9 +1105,11 @@ class LedgerApp(tk.Tk):
     def _build_inventory(self):
         top = ttk.Frame(self.tab_inv, padding=(10, 10, 10, 0))
         top.pack(fill="x")
-        ttk.Label(top, text="Double-click On Hand or Preferred Source to edit right in the table — Enter saves, Esc cancels.", foreground=INK_DIM).pack(side="left")
+        hint = ttk.Label(top, text="Double-click On Hand or Preferred Source to edit right in the table — Enter saves, Esc cancels.", foreground=INK_DIM)
+        hint.pack(side="left")
         self.inv_total_var = tk.StringVar(value="Total value: —")
         ttk.Label(top, textvariable=self.inv_total_var, font=(RESOLVED["body"], 10, "bold"), foreground=INK).pack(side="right")
+        autowrap_toolbar(top, hint)
 
         frame, self.inv_tree = make_tree(
             self.tab_inv, ["Ingredient", "Unit", "On Hand", "Preferred Source", "Unit Cost", "Value"],
@@ -1024,15 +1155,17 @@ class LedgerApp(tk.Tk):
     def _build_planner(self):
         top = ttk.Frame(self.tab_planner, padding=(10, 10, 10, 0))
         top.pack(fill="x")
-        ttk.Label(top, text="Double-click Enabled or Target Qty to edit in place.").pack(side="left")
+        hint = ttk.Label(top, text="Double-click Enabled or Target Qty to edit in place.")
+        hint.pack(side="left")
         self.bulk_qty_var = tk.StringVar(value="100")
         ttk.Entry(top, textvariable=self.bulk_qty_var, width=8).pack(side="left", padx=(10, 4))
         ttk.Button(top, text="Set target for all enabled", command=self._bulk_apply).pack(side="left", padx=(0, 12))
         ttk.Button(top, text="Mark Made…", command=self._mark_made).pack(side="left")
+        autowrap_toolbar(top, hint)
 
         plan_frame, self.plan_tree = make_tree(
             self.tab_planner, ["Enabled", "Recipe", "Target Qty", "Crafts Needed", "Run Cost"],
-            {"Recipe": 180}, height=10,
+            {"Recipe": 180}, height=4,
         )
         plan_frame.pack(fill="both", expand=True, padx=10, pady=(6, 6))
         self.plan_tree.bind("<Double-1>", self._planner_cell_click)
@@ -1044,7 +1177,7 @@ class LedgerApp(tk.Tk):
         ttk.Label(order_label, textvariable=self.order_total_var, foreground=INK_DIM).pack(side="left", padx=10)
 
         order_frame, self.order_tree = make_tree(
-            self.tab_planner, ["Ingredient", "Short", "Do This"], {"Ingredient": 140, "Do This": 420}, height=10,
+            self.tab_planner, ["Ingredient", "Short", "Do This"], {"Ingredient": 140, "Do This": 420}, height=4,
         )
         order_frame.pack(fill="both", expand=True, padx=10, pady=(4, 10))
 
