@@ -66,11 +66,27 @@ def load_data():
             if key not in data.setdefault("settings", {}):
                 data["settings"][key] = default
                 changed = True
+        for rows_name in ("vendors", "conversions"):
+            if dedupe_ids(data.get(rows_name, [])):
+                changed = True
         if changed:
             save_data(data)
         return data
     save_data(SEED)
     return json.loads(json.dumps(SEED))
+
+
+def dedupe_ids(rows):
+    """Repairs a list whose rows share an "id" (an earlier version could create
+    these after a delete-then-add). The first row keeps its id; later ones get
+    a fresh one. Returns True if anything changed."""
+    taken, changed = set(), False
+    for row in rows:
+        if row["id"] in taken:
+            row["id"] = unique_id(row["id"], taken | {r["id"] for r in rows})
+            changed = True
+        taken.add(row["id"])
+    return changed
 
 
 def save_data(data):

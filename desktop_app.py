@@ -546,7 +546,7 @@ class ConversionDialog(tk.Toplevel):
             messagebox.showerror("Invalid", "Quantities must be greater than zero.", parent=self)
             return
         data = self.app.data
-        new_id = "conv-" + eng.slugify(f"{in_id}-{out_id}-{len(data['conversions'])}")
+        new_id = eng.unique_id("conv-" + eng.slugify(f"{in_id}-{out_id}"), {c["id"] for c in data["conversions"]})
         data["conversions"].append({"id": new_id, "inputId": in_id, "inputQty": in_qty,
                                      "outputId": out_id, "outputQty": out_qty, "cost": cost})
         eng.save_data(data)
@@ -608,7 +608,7 @@ class VendorDialog(tk.Toplevel):
             messagebox.showerror("Invalid price", "Price must be a number, or blank for TBD.", parent=self)
             return
         data = self.app.data
-        new_id = "v-" + eng.slugify(f"{vendor_name}-{len(data['vendors'])}")
+        new_id = eng.unique_id("v-" + eng.slugify(vendor_name), {v["id"] for v in data["vendors"]})
         data["vendors"].append({"id": new_id, "ingredientId": self.name_to_id[self.ing_var.get()],
                                  "vendorName": vendor_name, "town": self.town_var.get().strip(),
                                  "price": price, "stock": self.stock_var.get()})
