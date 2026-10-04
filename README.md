@@ -39,9 +39,9 @@ Everything you enter is saved to `ledger_data.json`, created next to the scripts
 - **Dashboard** — shortages weighted by how many active recipes need them ("Acquire Next"), and recipes graded tight or problematic by profit margin (cutoffs are editable in Settings) or over your maximum sale price.
 - **Recipes** — ingredients, craft yield, sale price, free-text category; cost, profit and margin computed automatically, including labor. Toggle a recipe active/inactive right from the list.
 - **Ingredients & Conversions** — unit costs, plus raw-to-finished conversions (e.g. bulk stock portioned into sellable units) that resolve automatically through the cost engine. Any ingredient can be marked "not bought from a vendor" with its own flat cost and a custom acquisition note (grow it, make it in-house, forage it — whatever fits your business) instead of a vendor price.
-- **Vendors** — multiple vendor prices per ingredient across locations; cheapest is flagged automatically.
-- **Inventory** — quantities on hand, and an optional preferred supplier per ingredient. Edited in place in the table — no popups.
-- **Planner** — set target quantities per recipe, then **What To Order** tells you exactly what to buy (and from where), make in-house, or otherwise acquire, walking through any conversions along the way. **Mark Made** deducts a completed run's ingredients from Inventory and reduces its remaining target.
+- **Vendors** — multiple vendor prices per ingredient across locations; cheapest is flagged automatically. Double-click any cell to edit it — including the Ingredient name, which fixes a misspelling everywhere at once.
+- **Inventory** — quantities on hand, an optional preferred supplier, and a free-text **To Order** note per ingredient. Edited in place in the table — no popups. **Copy Order List** copies the notes for pasting elsewhere; **Mark Order Received** adds each note's number to On Hand and clears it.
+- **Planner** — set target quantities per recipe, then **What To Order** (with a **Copy List** button, or Ctrl+C for the selected row) tells you exactly what to buy (and from where), make in-house, or otherwise acquire, walking through any conversions along the way. **Mark Made** deducts a completed run's ingredients from Inventory and reduces its remaining target.
 - **Settings** — business branding, maximum sale price, margin grade cutoffs (healthy / good / tight / problematic), labor/overhead cost per unit of production time, and a tax-rate placeholder.
 
 ## Customizing for your business

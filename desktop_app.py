@@ -1,4 +1,5 @@
 import ctypes
+import re
 import sys
 import traceback
 import tkinter as tk
@@ -1051,7 +1052,7 @@ class LedgerApp(tk.Tk):
     def _build_vendors(self):
         top = ttk.Frame(self.tab_vendors, padding=(10, 10, 10, 0))
         top.pack(fill="x")
-        hint = ttk.Label(top, text="Double-click Vendor, Town, Price, Stock or Note to edit in place — Enter saves, Esc cancels. ★ = cheapest.", foreground=INK_DIM)
+        hint = ttk.Label(top, text="Double-click any cell to edit in place (Ingredient renames it everywhere) — Enter saves, Esc cancels. ★ = cheapest.", foreground=INK_DIM)
         hint.pack(side="left")
         ttk.Button(top, text="Add Vendor Price", command=lambda: VendorDialog(self)).pack(side="right", padx=4)
         ttk.Button(top, text="Delete Selected", command=self._delete_selected_vendor).pack(side="right", padx=4)
@@ -1071,7 +1072,7 @@ class LedgerApp(tk.Tk):
         v = next((x for x in self.data["vendors"] if x["id"] == row_id), None)
         if not v:
             return
-        field = {"#2": "vendorName", "#3": "town", "#4": "price", "#5": "stock", "#6": "note"}.get(col)
+        field = {"#1": "ingredient", "#2": "vendorName", "#3": "town", "#4": "price", "#5": "stock", "#6": "note"}.get(col)
         if not field:
             return
 
@@ -1079,7 +1080,13 @@ class LedgerApp(tk.Tk):
             eng.save_data(self.data)
             self.refresh_all()
 
-        if field == "stock":
+        if field == "ingredient":
+            ing_id = v["ingredientId"]
+
+            def commit_rename(raw):
+                self._rename_ingredient(ing_id, raw)
+            inline_edit_entry(tree, row_id, col, self.data["ingredients"][ing_id]["name"], commit_rename)
+        elif field == "stock":
             options = ["unknown", "available", "out"]
 
             def commit_stock(chosen):
@@ -1112,6 +1119,22 @@ class LedgerApp(tk.Tk):
                 save()
             inline_edit_entry(tree, row_id, col, initial, commit_text)
 
+    def _rename_ingredient(self, ing_id, raw):
+        """Fixes a misspelled ingredient name. Recipes, conversions, vendors and
+        inventory all point at the ingredient by id, so only the name changes."""
+        name = raw.strip()
+        ing = self.data["ingredients"][ing_id]
+        if not name or name == ing["name"]:
+            return
+        clash = next((o["name"] for i, o in self.data["ingredients"].items()
+                      if i != ing_id and o["name"].lower() == name.lower()), None)
+        if clash:
+            messagebox.showerror("Name already used", f"There's already an ingredient called \"{clash}\".")
+            return
+        ing["name"] = name
+        eng.save_data(self.data)
+        self.refresh_all()
+
     def _delete_selected_vendor(self):
         sel = self.vendor_tree.selection()
         if not sel:
@@ -1132,18 +1155,78 @@ class LedgerApp(tk.Tk):
     def _build_inventory(self):
         top = ttk.Frame(self.tab_inv, padding=(10, 10, 10, 0))
         top.pack(fill="x")
-        hint = ttk.Label(top, text="Double-click On Hand or Preferred Source to edit right in the table — Enter saves, Esc cancels.", foreground=INK_DIM)
+        hint = ttk.Label(top, text="Double-click On Hand, To Order or Preferred Source to edit right in the table — Enter saves, Esc cancels.", foreground=INK_DIM)
         hint.pack(side="left")
         self.inv_total_var = tk.StringVar(value="Total value: —")
-        ttk.Label(top, textvariable=self.inv_total_var, font=(RESOLVED["body"], 10, "bold"), foreground=INK).pack(side="right")
+        ttk.Label(top, textvariable=self.inv_total_var, font=(RESOLVED["body"], 10, "bold"), foreground=INK).pack(side="right", padx=(10, 0))
+        self.inv_copy_btn = ttk.Button(top, text="Copy Order List", command=self._copy_inventory_order_list)
+        self.inv_copy_btn.pack(side="right")
+        ttk.Button(top, text="Mark Order Received", command=self._receive_order).pack(side="right", padx=(0, 6))
         autowrap_toolbar(top, hint)
 
         frame, self.inv_tree = make_tree(
-            self.tab_inv, ["Ingredient", "Unit", "On Hand", "Preferred Source", "Unit Cost", "Value"],
-            {"Ingredient": 170, "Preferred Source": 170}, height=18,
+            self.tab_inv, ["Ingredient", "Unit", "On Hand", "To Order", "Preferred Source", "Unit Cost", "Value"],
+            {"Ingredient": 170, "To Order": 100, "Preferred Source": 170}, height=18,
         )
         frame.pack(fill="both", expand=True, padx=10, pady=10)
         self.inv_tree.bind("<Double-1>", self._inventory_cell_click)
+
+    def _copy_inventory_order_list(self):
+        """To Order is a free-text note per ingredient -- never read by any cost or
+        shortage calculation. This just copies whatever's written there, paired
+        with the ingredient name, as 'Item | Note' lines."""
+        lines = []
+        for iid in sorted(self.data["ingredients"], key=lambda i: self.data["ingredients"][i]["name"]):
+            note = (self.data["inventory"].get(iid, {}).get("toOrder") or "").strip()
+            if note:
+                lines.append(f"{eng.ing_name(self.data, iid)} | {note}")
+        if not lines:
+            messagebox.showinfo("Nothing to copy", "No ingredients have a To Order note yet.")
+            return
+        self.clipboard_clear()
+        self.clipboard_append("\n".join(lines))
+        self.update()
+        self.inv_copy_btn.configure(text="Copied!")
+        self.after(1500, lambda: self.inv_copy_btn.configure(text="Copy Order List"))
+
+    def _receive_order(self):
+        """Adds each ingredient's To Order number to On Hand and clears the note --
+        marking that the order came in. Pulls the first number out of the note (so
+        '50 (ask Sam)' still works), skipping anything with no number in it."""
+        to_add, unparsed = [], []
+        for iid in sorted(self.data["ingredients"], key=lambda i: self.data["ingredients"][i]["name"]):
+            note = (self.data["inventory"].get(iid, {}).get("toOrder") or "").strip()
+            if not note:
+                continue
+            m = re.search(r"-?\d+(?:\.\d+)?", note)
+            if m:
+                qty = float(m.group())
+                if qty > 0:
+                    to_add.append((iid, eng.ing_name(self.data, iid), qty, note))
+                    continue
+            unparsed.append((eng.ing_name(self.data, iid), note))
+
+        if not to_add and not unparsed:
+            messagebox.showinfo("Nothing to receive", "No ingredients have a To Order note yet.")
+            return
+        if not to_add:
+            messagebox.showwarning("No number found", "None of the To Order notes have a number in them, so there's nothing to add:\n\n"
+                                    + "\n".join(f"{name}: \"{note}\"" for name, note in unparsed))
+            return
+
+        lines = [f"{name}: On Hand +{qty:g}  (from \"{note}\")" for _, name, qty, note in to_add]
+        msg = "Add these to On Hand and clear their To Order notes?\n\n" + "\n".join(lines)
+        if unparsed:
+            msg += "\n\nSkipped (no number found, left as-is):\n" + "\n".join(f"{name}: \"{note}\"" for name, note in unparsed)
+        if not messagebox.askyesno("Mark Order Received", msg):
+            return
+
+        for iid, name, qty, note in to_add:
+            inv = self.data["inventory"].setdefault(iid, {"qty": 0, "preferredVendorId": None, "toOrder": ""})
+            inv["qty"] = (inv.get("qty") or 0) + qty
+            inv["toOrder"] = ""
+        eng.save_data(self.data)
+        self.refresh_all()
 
     def _inventory_cell_click(self, event):
         tree = self.inv_tree
@@ -1163,7 +1246,14 @@ class LedgerApp(tk.Tk):
                 eng.save_data(self.data)
                 self.refresh_all()
             inline_edit_entry(tree, row_id, col, tree.set(row_id, col), commit)
-        elif col == "#4":  # Preferred Source
+        elif col == "#4":  # To Order (free-text note, not used in any calculation)
+            def commit(raw, ing_id=row_id):
+                inv = self.data["inventory"].setdefault(ing_id, {"qty": 0, "preferredVendorId": None, "toOrder": ""})
+                inv["toOrder"] = raw.strip()
+                eng.save_data(self.data)
+                self.refresh_all()
+            inline_edit_entry(tree, row_id, col, tree.set(row_id, col), commit)
+        elif col == "#5":  # Preferred Source
             vendors_here = [v for v in self.data["vendors"] if v["ingredientId"] == row_id]
             options = ["cheapest available"] + [
                 v["vendorName"] + (f" ({eng.fmt_money(v['price'])})" if v.get("price") is not None else " (TBD)") for v in vendors_here
@@ -1202,11 +1292,32 @@ class LedgerApp(tk.Tk):
         ttk.Label(order_label, text="What To Order", font=(RESOLVED["display"], 14), foreground=ACCENT).pack(side="left")
         self.order_total_var = tk.StringVar(value="")
         ttk.Label(order_label, textvariable=self.order_total_var, foreground=INK_DIM).pack(side="left", padx=10)
+        self.copy_all_btn = ttk.Button(order_label, text="Copy List", command=self._copy_order_list)
+        self.copy_all_btn.pack(side="right")
+        copy_hint = ttk.Label(order_label, text="Ctrl+C copies the selected row", foreground=INK_DIM)
+        copy_hint.pack(side="right", padx=10)
+        autowrap_toolbar(order_label, copy_hint)
 
         order_frame, self.order_tree = make_tree(
             self.tab_planner, ["Ingredient", "Short", "Do This"], {"Ingredient": 140, "Do This": 420}, height=4,
         )
         order_frame.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+        self.order_items = {}
+        self.order_tree.bind("<Control-c>", lambda e: self._copy_order_list(selected_only=True))
+
+    def _copy_order_list(self, selected_only=False):
+        """Copies 'Item xQty' lines -- the thing you actually acquire (e.g. the
+        raw material, not the converted product) -- ready to paste into chat or a note."""
+        keys = self.order_tree.selection() if selected_only else self.order_tree.get_children()
+        lines = [f"{self.order_items[k][0]} x{self.order_items[k][1]:g}" for k in keys if k in self.order_items]
+        if not lines:
+            return "break"
+        self.clipboard_clear()
+        self.clipboard_append("\n".join(lines))
+        self.update()
+        self.copy_all_btn.configure(text="Copied!")
+        self.after(1500, lambda: self.copy_all_btn.configure(text="Copy List"))
+        return "break"
 
     def _planner_cell_click(self, event):
         tree = self.plan_tree
@@ -1403,7 +1514,7 @@ class LedgerApp(tk.Tk):
             else:
                 pref_txt = "cheapest available"
             self.inv_tree.insert("", "end", iid=iid, values=(
-                ing["name"], ing["unit"], f"{inv.get('qty', 0):g}", pref_txt,
+                ing["name"], ing["unit"], f"{inv.get('qty', 0):g}", inv.get("toOrder", ""), pref_txt,
                 "NO PRICE" if res["warn"] else eng.fmt_money(res["cost"]), eng.fmt_money(value),
             ))
         stripe_tree(self.inv_tree)
@@ -1425,11 +1536,13 @@ class LedgerApp(tk.Tk):
         shortages = [s for s in plan["shortages"] if s["shortage"] > 0]
         order_total = 0.0
         self.order_tree.delete(*self.order_tree.get_children())
+        self.order_items = {}
         for s in shortages:
             last = eng.resolve_purchase_steps(self.data, s["id"], s["shortage"])[-1]
             if last["type"] == "buy":
                 order_total += last["vendor"]["price"] * last["qty"]
-            self.order_tree.insert("", "end", values=(
+            self.order_items[s["id"]] = (eng.ing_name(self.data, last["ingredientId"]), last["qty"])
+            self.order_tree.insert("", "end", iid=s["id"], values=(
                 eng.ing_name(self.data, s["id"]), int(s["shortage"]), eng.order_line_text(self.data, s["id"], s["shortage"]),
             ))
         stripe_tree(self.order_tree)
