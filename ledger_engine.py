@@ -322,6 +322,43 @@ def apply_made(data, recipe_id, crafts):
     return shortfalls
 
 
+def add_to_receipt(order, recipe_id, qty):
+    """Adds `qty` of a recipe to a counter order (a list of {"recipeId", "qty"}),
+    merging with an existing line for the same item."""
+    for line in order:
+        if line["recipeId"] == recipe_id:
+            line["qty"] += qty
+            return
+    order.append({"recipeId": recipe_id, "qty": qty})
+
+
+def receipt_rows(data, order):
+    """(name, qty, unit price, line total) for each line at the recipe's current
+    sale price. Lines for recipes that have since been deleted are skipped."""
+    rows = []
+    for line in order:
+        r = data["recipes"].get(line["recipeId"])
+        if not r:
+            continue
+        price = r.get("salePrice") or 0
+        rows.append((r["name"], line["qty"], price, price * line["qty"]))
+    return rows
+
+
+def receipt_total(data, order):
+    return sum(row[3] for row in receipt_rows(data, order))
+
+
+def receipt_text(data, order, title="Receipt"):
+    """Plain-text receipt, ready to paste into chat or a note."""
+    rows = receipt_rows(data, order)
+    lines = [title, ""]
+    for name, qty, price, total in rows:
+        lines.append(f"{qty:g} x {name} @ {fmt_money(price)} = {fmt_money(total)}")
+    lines += ["", f"Total: {fmt_money(sum(r[3] for r in rows))}"]
+    return "\n".join(lines)
+
+
 def order_line_text(data, top_id, shortage_qty):
     steps = resolve_purchase_steps(data, top_id, shortage_qty)
     last = steps[-1]

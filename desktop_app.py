@@ -708,6 +708,150 @@ def inline_edit_combobox(tree, row_id, col, options, initial, on_commit):
 
 
 
+class CounterOrderDialog(tk.Toplevel):
+    """The register: ring items up, watch the running total, copy the receipt.
+    Not modal, so the ledger stays usable underneath. The order itself lives on
+    the app (app.counter_order), so closing this window -- or switching theme,
+    which rebuilds every window -- never loses it."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.title("Counter Order")
+        self.transient(app)
+        self.configure(background=BG)
+        self.item_var = tk.StringVar()
+        self.qty_var = tk.StringVar(value="1")
+        self.label_to_id = {}
+
+        form = ttk.Frame(self, padding=12)
+        form.pack(fill="both", expand=True)
+        form.columnconfigure(0, weight=1)
+
+        pick = ttk.Frame(form)
+        pick.grid(row=0, column=0, sticky="ew")
+        pick.columnconfigure(0, weight=1)
+        self.item_combo = ttk.Combobox(pick, textvariable=self.item_var, state="readonly", width=34)
+        self.item_combo.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Label(pick, text="Qty").grid(row=0, column=1, padx=(0, 4))
+        qty_entry = ttk.Entry(pick, textvariable=self.qty_var, width=5)
+        qty_entry.grid(row=0, column=2, padx=(0, 6))
+        qty_entry.bind("<Return>", lambda e: self._add())
+        ttk.Button(pick, text="Add item to order", command=self._add).grid(row=0, column=3)
+
+        frame, self.tree = make_tree(form, ["Item", "Qty", "Price", "Total"], {"Item": 220, "Qty": 60, "Price": 80, "Total": 90},
+                                     height=9, sortable=False)
+        frame.grid(row=1, column=0, sticky="nsew", pady=(10, 6))
+        form.rowconfigure(1, weight=1)
+        self.tree.bind("<Double-1>", self._edit_qty)
+        self.tree.bind("<Delete>", lambda e: self._remove_selected())
+        ttk.Label(form, text="Double-click a Qty to change it. Select a line and press Delete to remove it.",
+                  foreground=INK_DIM).grid(row=2, column=0, sticky="w")
+
+        self.total_var = tk.StringVar()
+        ttk.Label(form, textvariable=self.total_var, font=(RESOLVED["display"], 18), foreground=ACCENT).grid(row=3, column=0, sticky="e", pady=(8, 4))
+
+        btns = ttk.Frame(form)
+        btns.grid(row=4, column=0, sticky="e")
+        ttk.Button(btns, text="Remove Selected", command=self._remove_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="Reset", command=self._reset).pack(side="left", padx=(0, 6))
+        self.copy_btn = ttk.Button(btns, text="Copy Receipt", command=self._copy)
+        self.copy_btn.pack(side="left")
+
+        self.refresh()
+        self.update_idletasks()
+        self.minsize(self.winfo_reqwidth(), self.winfo_reqheight())
+        center(self, app)
+        qty_entry.focus_set()
+
+    @property
+    def order(self):
+        return self.app.counter_order
+
+    def refresh(self):
+        """Re-reads recipes and prices (the ledger may have changed underneath)
+        and redraws the receipt."""
+        data = self.app.data
+        recipes = sorted(((rid, r) for rid, r in data["recipes"].items() if r.get("active")), key=lambda kv: kv[1]["name"])
+        if not recipes:
+            recipes = sorted(data["recipes"].items(), key=lambda kv: kv[1]["name"])
+        self.label_to_id = {f"{r['name']}  —  {eng.fmt_money(r.get('salePrice') or 0)}": rid for rid, r in recipes}
+        labels = list(self.label_to_id)
+        self.item_combo.configure(values=labels)
+        if self.item_var.get() not in self.label_to_id:
+            self.item_var.set(labels[0] if labels else "")
+        self.order[:] = [l for l in self.order if l["recipeId"] in data["recipes"]]
+        self.tree.delete(*self.tree.get_children())
+        for line in self.order:
+            r = data["recipes"][line["recipeId"]]
+            price = r.get("salePrice") or 0
+            self.tree.insert("", "end", iid=line["recipeId"], values=(
+                r["name"], f"{line['qty']:g}", eng.fmt_money(price), eng.fmt_money(price * line["qty"])))
+        stripe_tree(self.tree)
+        self.total_var.set(f"Total: {eng.fmt_money(eng.receipt_total(data, self.order))}")
+
+    @staticmethod
+    def _whole_number(raw):
+        try:
+            qty = int(float(str(raw).strip()))
+        except ValueError:
+            return None
+        return qty if qty > 0 else None
+
+    def _add(self):
+        rid = self.label_to_id.get(self.item_var.get())
+        if not rid:
+            messagebox.showerror("No item", "Pick an item first.", parent=self)
+            return
+        qty = self._whole_number(self.qty_var.get())
+        if qty is None:
+            messagebox.showerror("Invalid quantity", "Quantity must be a whole number, 1 or more.", parent=self)
+            return
+        eng.add_to_receipt(self.order, rid, qty)
+        self.qty_var.set("1")
+        self.refresh()
+
+    def _edit_qty(self, event):
+        row_id = self.tree.identify_row(event.y)
+        if not row_id or self.tree.identify_column(event.x) != "#2":
+            return
+
+        def commit(raw, rid=row_id):
+            qty = self._whole_number(raw)
+            if qty is None:
+                messagebox.showerror("Invalid quantity", "Quantity must be a whole number, 1 or more.", parent=self)
+                return
+            for line in self.order:
+                if line["recipeId"] == rid:
+                    line["qty"] = qty
+            self.refresh()
+        inline_edit_entry(self.tree, row_id, "#2", self.tree.set(row_id, "Qty"), commit)
+
+    def _remove_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("No selection", "Select a line to remove first.", parent=self)
+            return
+        self.order[:] = [l for l in self.order if l["recipeId"] != sel[0]]
+        self.refresh()
+
+    def _reset(self):
+        if self.order and not messagebox.askyesno("Reset order", "Clear everything on this order?", parent=self):
+            return
+        self.order.clear()
+        self.refresh()
+
+    def _copy(self):
+        if not eng.receipt_rows(self.app.data, self.order):
+            messagebox.showinfo("Nothing to copy", "The order is empty.", parent=self)
+            return
+        self.clipboard_clear()
+        self.clipboard_append(eng.receipt_text(self.app.data, self.order, self.app.receipt_title()))
+        self.update()
+        self.copy_btn.configure(text="Copied!")
+        self.after(1500, lambda: self.copy_btn.winfo_exists() and self.copy_btn.configure(text="Copy Receipt"))
+
+
 class SettingsFrame(ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent, padding=12)
@@ -863,6 +1007,8 @@ class LedgerApp(tk.Tk):
         self.geometry(f"{win_w}x{win_h}")
         self.minsize(min(900, win_w), min(600, win_h))
         self.data = eng.load_data()
+        self.counter_order = []          # the current receipt; not saved, lives until Reset
+        self.counter_dialog = None
 
         load_local_fonts()
         display, body = resolve_fonts(self)
@@ -896,6 +1042,9 @@ class LedgerApp(tk.Tk):
 
         header = ttk.Frame(self, padding=(12, 10, 12, 4))
         header.pack(fill="x")
+        # The button is packed first so a narrow window or high display scaling
+        # clips the subtitle instead of pushing the button off the edge.
+        ttk.Button(header, text="Counter Order", command=self._open_counter_order).pack(side="right")
         self.title_label = ttk.Label(header, font=(display, 20), foreground=ACCENT)
         self.title_label.pack(side="left")
         self.subtitle_label = ttk.Label(header, foreground=INK_DIM)
@@ -1523,6 +1672,21 @@ class LedgerApp(tk.Tk):
         ttk.Button(btns, text="Deduct & Update Planner", command=confirm).pack(side="left")
         center(dialog, self)
 
+    def receipt_title(self):
+        return self.data["settings"].get("businessName") or "Receipt"
+
+    def _open_counter_order(self):
+        if self.counter_dialog is not None and self.counter_dialog.winfo_exists():
+            self.counter_dialog.deiconify()
+            self.counter_dialog.lift()
+            self.counter_dialog.focus_force()
+            return
+        self.counter_dialog = CounterOrderDialog(self)
+
+    def _refresh_counter(self):
+        if self.counter_dialog is not None and self.counter_dialog.winfo_exists():
+            self.counter_dialog.refresh()
+
     def apply_branding(self):
         s = self.data["settings"]
         name = s.get("businessName", "My Business")
@@ -1541,6 +1705,7 @@ class LedgerApp(tk.Tk):
         self._refresh_inventory()
         self._refresh_crafted()
         self._refresh_planner()
+        self._refresh_counter()
 
     def _refresh_dashboard(self):
         recipes = list(self.data["recipes"].items())
