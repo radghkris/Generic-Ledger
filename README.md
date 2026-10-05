@@ -7,6 +7,15 @@ Two local Python versions, sharing the same logic (`ledger_engine.py`) and the s
 - **`desktop_app.py`** — a standalone desktop window (Tkinter). No browser, no extra installs — just Python itself.
 - **`app.py`** — a Streamlit version that runs in your browser at `http://localhost:8501`, if you'd rather have that.
 
+## Easiest install (Windows, nothing else needed)
+
+1. Download **[Install-Ledger.bat](https://raw.githubusercontent.com/radghkris/Generic-Ledger/main/Install-Ledger.bat)** (right-click the link, Save link as).
+2. Double-click it. It downloads the app, installs Python if the computer doesn't have it, puts a **Generic Ledger** shortcut on the Desktop, and starts the ledger.
+
+No Git, no command prompt. From then on, use the Desktop shortcut: each launch quietly checks for a newer version and installs it (your `ledger_data.json` is never touched; if you're offline it just starts). Installed to `%LOCALAPPDATA%\GenericLedger`.
+
+The manual routes below still work if you prefer them.
+
 ## Run the desktop app (recommended if you don't want a browser tab)
 
 Double-click **`run_desktop.bat`**, or from a terminal:

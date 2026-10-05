@@ -3,6 +3,9 @@ cd /d "%~dp0"
 
 if exist "error_log.txt" del "error_log.txt"
 
+rem Copies made by Install-Ledger.bat (no .git folder) quietly pick up new versions. Skipped if offline.
+if not exist ".git" if exist "tools\setup.ps1" powershell -NoProfile -ExecutionPolicy Bypass -File "tools\setup.ps1" -Update >nul 2>&1
+
 where pythonw >nul 2>&1
 if not errorlevel 1 (
     start "" pythonw desktop_app.py >"error_log.txt" 2>&1
@@ -15,10 +18,14 @@ if not errorlevel 1 (
     exit /b 0
 )
 
-echo Python wasn't found on this computer.
-echo.
-echo 1. Download Python from https://www.python.org/downloads/
-echo 2. In the installer, tick "Add python.exe to PATH" on the first screen.
-echo 3. Finish the install, then double-click this file again.
-echo.
-pause
+if defined LEDGER_RETRIED (
+    echo Python still isn't available. Close this window and double-click the shortcut again.
+    pause
+    exit /b 1
+)
+echo Python wasn't found on this computer - installing it now.
+powershell -NoProfile -ExecutionPolicy Bypass -File "tools\setup.ps1" -NoLaunch
+if errorlevel 1 exit /b 1
+for /d %%d in ("%LOCALAPPDATA%\Programs\Python\Python3*") do set "PATH=%%d;%PATH%"
+set LEDGER_RETRIED=1
+call "%~f0"

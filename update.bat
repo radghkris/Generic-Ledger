@@ -6,6 +6,13 @@ echo Updating the copy of the ledger in:
 echo   %CD%
 echo.
 
+if not exist ".git" if exist "tools\setup.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "tools\setup.ps1" -Update
+    echo Up to date.
+    pause
+    exit /b 0
+)
+
 where git >nul 2>&1
 if errorlevel 1 (
     echo Git isn't installed on this computer, or isn't on PATH.
