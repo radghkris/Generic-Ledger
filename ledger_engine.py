@@ -299,21 +299,51 @@ def crafted_short(data, recipe_id):
     return max(0.0, (c.get("setPoint") or 0) - (c.get("qty") or 0))
 
 
-def apply_made(data, recipe_id, crafts):
+def _consume(data, ing_id, need, shortfalls, notes, visiting=()):
+    """Takes `need` of an ingredient out of inventory. Whatever isn't on hand is
+    assumed to have been made from the ingredient's conversion input (e.g. no
+    portioned supply on hand -> bulk supply was used): whole conversion batches
+    are deducted from the input's stock, and the unused remainder of the output
+    is added back to this ingredient's stock. With no conversion to fall back on
+    (or for a custom-cost ingredient), stock is clamped to 0 and the gap goes
+    into `shortfalls`."""
+    inv = data["inventory"].setdefault(ing_id, {"qty": 0, "preferredVendorId": None})
+    have = inv.get("qty", 0) or 0
+    if need <= have:
+        inv["qty"] = have - need
+        return
+    short = need - have
+    conv = None
+    if ing_id not in visiting and data["ingredients"].get(ing_id, {}).get("costMode") != "custom":
+        conv = next((c for c in data["conversions"] if c["outputId"] == ing_id and (c.get("outputQty") or 0) > 0), None)
+    if not conv:
+        shortfalls.append(f"{ing_name(data, ing_id)} (had {have:g}, used {need:g})")
+        inv["qty"] = 0.0
+        return
+    batches = math.ceil(round(short / conv["outputQty"], 9))
+    used_input = batches * (conv.get("inputQty") or 1)
+    made = batches * conv["outputQty"]
+    inv["qty"] = 0.0
+    _consume(data, conv["inputId"], used_input, shortfalls, notes, visiting + (ing_id,))
+    left = made - short
+    inv["qty"] = left
+    if notes is not None:
+        note = f"{ing_name(data, ing_id)}: used {used_input:g} {ing_name(data, conv['inputId'])} to make {made:g}"
+        notes.append(note + (f" ({left:g} left over)" if left > 1e-9 else ""))
+
+
+def apply_made(data, recipe_id, crafts, notes=None):
     """Deduct ingredients for `crafts` batches of recipe_id from inventory, add the
     finished items to crafted stock, and reduce its remaining plan target by the
-    items produced. Returns a list of human-readable ingredient shortfalls
-    (inventory is clamped to 0, never negative)."""
+    items produced. An ingredient with too little on hand is taken from its
+    conversion input where one exists (see _consume), and a line describing that
+    is appended to `notes` if a list is passed. Returns a list of human-readable
+    ingredient shortfalls (inventory is clamped to 0, never negative)."""
     r = data["recipes"][recipe_id]
     yield_qty = r["yieldQty"] if r.get("yieldQty", 0) > 0 else 1
     shortfalls = []
     for li in r.get("ingredients", []):
-        need = crafts * li["qty"]
-        inv = data["inventory"].setdefault(li["ingredientId"], {"qty": 0, "preferredVendorId": None})
-        have = inv.get("qty", 0) or 0
-        if need > have:
-            shortfalls.append(f"{ing_name(data, li['ingredientId'])} (had {have:g}, used {need:g})")
-        inv["qty"] = max(0.0, have - need)
+        _consume(data, li["ingredientId"], crafts * li["qty"], shortfalls, notes)
     t = data["plan"]["targets"].get(recipe_id, {"enabled": False, "qty": 0})
     t["qty"] = max(0.0, (t.get("qty", 0) or 0) - crafts * yield_qty)
     data["plan"]["targets"][recipe_id] = t

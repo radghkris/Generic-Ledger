@@ -1659,12 +1659,17 @@ class LedgerApp(tk.Tk):
             if crafts <= 0:
                 messagebox.showerror("Invalid number", "Must be at least 1.", parent=dialog)
                 return
-            shortfalls = eng.apply_made(self.data, rid, crafts)
+            notes = []
+            shortfalls = eng.apply_made(self.data, rid, crafts, notes)
             eng.save_data(self.data)
             self.refresh_all()
             dialog.destroy()
+            converted = "Not enough on hand, so these came from their base ingredient:\n" + "\n".join(notes)
             if shortfalls:
-                messagebox.showwarning("Stock ran short", "Inventory was set to 0 for:\n" + "\n".join(shortfalls))
+                msg = "Inventory was set to 0 for:\n" + "\n".join(shortfalls)
+                messagebox.showwarning("Stock ran short", msg + ("\n\n" + converted if notes else ""))
+            elif notes:
+                messagebox.showinfo("Used base ingredients", converted)
 
         btns = ttk.Frame(form)
         btns.grid(row=3, column=0, columnspan=2, sticky="e", pady=(10, 0))

@@ -40,7 +40,7 @@ Not touched: recipes with no set point, and inactive recipes (including their ta
 **`ledger_engine.py`**
 - `crafted_entry(data, recipe_id)` — returns (and creates on first use) `data["crafted"][recipe_id]`.
 - `crafted_short(data, recipe_id)` — the shortfall, clamped at 0.
-- `apply_made(data, recipe_id, crafts)` — deducts raw ingredients (clamped at 0), reduces the plan target, **and adds `crafts × yield` to crafted `qty`**. Returns a list of ingredient shortfalls for the warning dialog.
+- `apply_made(data, recipe_id, crafts, notes=None)` — deducts raw ingredients (never below 0), reduces the plan target, **and adds `crafts × yield` to crafted `qty`**. If an ingredient is short on hand but has a conversion (e.g. 0 Sugar, conversion 1 Sugarcane → 5 Sugar), the shortfall is assumed to have come from the base ingredient: whole conversion batches are taken out of its stock and the unused remainder of the output is added back (71 Sugar needed, 0 on hand → 15 Sugarcane used, 4 Sugar left). It chains through further conversions. A line per conversion is appended to `notes` if a list is passed. Returns a list of ingredient shortfalls for the warning dialog.
 - `load_data()` — adds an empty `"crafted": {}` to older data files on load. Nothing else in the file is modified.
 
 **`desktop_app.py`** (all methods on `LedgerApp`)
@@ -70,7 +70,7 @@ Stored in `ledger_data.json` alongside everything else:
 
 - **No "sold" action.** Selling doesn't reduce On Hand. A small "Sold…" button (qty → subtract, floor at 0) next to Mark Made would be the natural addition.
 - **Mark Made vs. Restock can double-count if misused.** Targets are meant to be *remaining items to make*. Restock sets them from the shortfall; Mark Made lowers them as you craft. Don't hand-edit On Hand *and* run Mark Made for the same batch.
-- **Inventory is not reduced below zero** on Mark Made — it clamps ingredients to 0 and warns, so the books can drift if raw stock wasn't accurate.
+- **Inventory is not reduced below zero** on Mark Made. An ingredient with nothing to convert from (or whose base ingredient is also short) is clamped to 0 and warned about, so the books can drift if raw stock wasn't accurate. Short ingredients that *do* have a conversion are taken from the base ingredient, even if that ingredient is normally bought directly. Ingredients marked "not bought from a vendor" (custom cost) are never converted.
 - **Whole items are assumed** in practice but nothing enforces integers.
 - **Inactive recipes are skipped** by Restock. Re-activate a recipe on the Recipes tab to include it.
 - **Desktop only.** `app.py` (Streamlit) shares the engine, so it will not break, but it has no UI for this data.
