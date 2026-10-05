@@ -1334,6 +1334,8 @@ class LedgerApp(tk.Tk):
         self.inv_copy_btn = ttk.Button(top, text="Copy Order List", command=self._copy_inventory_order_list)
         self.inv_copy_btn.pack(side="right")
         ttk.Button(top, text="Mark Order Received", command=self._receive_order).pack(side="right", padx=(0, 6))
+        self.inv_freeze_btn = ttk.Button(top, text="Mark Unavailable", command=self._toggle_unavailable)
+        self.inv_freeze_btn.pack(side="right", padx=(0, 6))
         autowrap_toolbar(top, hint)
 
         frame, self.inv_tree = make_tree(
@@ -1341,19 +1343,22 @@ class LedgerApp(tk.Tk):
             {"Ingredient": 170, "To Order": 100, "Preferred Source": 170}, height=18,
         )
         frame.pack(fill="both", expand=True, padx=10, pady=10)
+        configure_tier_tags(self.inv_tree)       # red rows = marked unavailable
         self.inv_tree.bind("<Double-1>", self._inventory_cell_click)
+        self.inv_tree.bind("<<TreeviewSelect>>", lambda e: self._sync_freeze_button())
 
     def _copy_inventory_order_list(self):
-        """To Order is a free-text note per ingredient -- never read by any cost or
-        shortage calculation. This just copies whatever's written there, paired
-        with the ingredient name, as 'Item | Note' lines."""
+        """Copies the To Order column as 'Item | Note' lines -- the typed note, or the
+        quantity What To Order says to get. Rows marked unavailable are left out:
+        they can't be acquired right now."""
+        needs = eng.order_needs(self.data)
         lines = []
         for iid in sorted(self.data["ingredients"], key=lambda i: self.data["ingredients"][i]["name"]):
-            note = (self.data["inventory"].get(iid, {}).get("toOrder") or "").strip()
-            if note:
-                lines.append(f"{eng.ing_name(self.data, iid)} | {note}")
+            e = eng.to_order_entry(self.data, iid, needs)
+            if e["text"] and not e["frozen"]:
+                lines.append(f"{eng.ing_name(self.data, iid)} | {e['text']}")
         if not lines:
-            messagebox.showinfo("Nothing to copy", "No ingredients have a To Order note yet.")
+            messagebox.showinfo("Nothing to copy", "Nothing to order right now.")
             return
         self.clipboard_clear()
         self.clipboard_append("\n".join(lines))
@@ -1362,41 +1367,51 @@ class LedgerApp(tk.Tk):
         self.after(1500, lambda: self.inv_copy_btn.configure(text="Copy Order List"))
 
     def _receive_order(self):
-        """Adds each ingredient's To Order number to On Hand and clears the note --
-        marking that the order came in. Pulls the first number out of the note (so
-        '50 (ask Sam)' still works), skipping anything with no number in it."""
-        to_add, unparsed = [], []
-        for iid in sorted(self.data["ingredients"], key=lambda i: self.data["ingredients"][i]["name"]):
-            note = (self.data["inventory"].get(iid, {}).get("toOrder") or "").strip()
-            if not note:
-                continue
-            m = re.search(r"-?\d+(?:\.\d+)?", note)
-            if m:
-                qty = float(m.group())
-                if qty > 0:
-                    to_add.append((iid, eng.ing_name(self.data, iid), qty, note))
-                    continue
-            unparsed.append((eng.ing_name(self.data, iid), note))
-
-        if not to_add and not unparsed:
-            messagebox.showinfo("Nothing to receive", "No ingredients have a To Order note yet.")
+        """Adds every To Order quantity to On Hand and clears the typed notes --
+        marking that the order came in. Rows marked unavailable (red) are left
+        completely alone, so they stay on What To Order. A typed note supplies its
+        first number (so '50 (ask Sam)' still works); notes with no number are skipped."""
+        to_add, unparsed, frozen = eng.plan_receipt(self.data)
+        if not to_add and not unparsed and not frozen:
+            messagebox.showinfo("Nothing to receive", "Nothing to order right now.")
             return
         if not to_add:
-            messagebox.showwarning("No number found", "None of the To Order notes have a number in them, so there's nothing to add:\n\n"
-                                    + "\n".join(f"{name}: \"{note}\"" for name, note in unparsed))
+            msg = "Nothing to add to On Hand."
+            if unparsed:
+                msg += "\n\nNo number found in:\n" + "\n".join(f"{name}: \"{note}\"" for name, note in unparsed)
+            if frozen:
+                msg += "\n\nMarked unavailable (left alone):\n" + "\n".join(f"{name}: {text}" for name, text in frozen)
+            messagebox.showwarning("Nothing received", msg)
             return
 
-        lines = [f"{name}: On Hand +{qty:g}  (from \"{note}\")" for _, name, qty, note in to_add]
-        msg = "Add these to On Hand and clear their To Order notes?\n\n" + "\n".join(lines)
+        lines = [f"{name}: On Hand +{qty:g}" for _, name, qty, _ in to_add]
+        msg = "Add these to On Hand?\n\n" + "\n".join(lines)
+        if frozen:
+            msg += "\n\nMarked unavailable (left alone):\n" + "\n".join(f"{name}: {text}" for name, text in frozen)
         if unparsed:
             msg += "\n\nSkipped (no number found, left as-is):\n" + "\n".join(f"{name}: \"{note}\"" for name, note in unparsed)
         if not messagebox.askyesno("Mark Order Received", msg):
             return
+        eng.apply_receipt(self.data, to_add)
+        eng.save_data(self.data)
+        self.refresh_all()
 
-        for iid, name, qty, note in to_add:
-            inv = self.data["inventory"].setdefault(iid, {"qty": 0, "preferredVendorId": None, "toOrder": ""})
-            inv["qty"] = (inv.get("qty") or 0) + qty
-            inv["toOrder"] = ""
+    def _selected_inventory_id(self):
+        sel = self.inv_tree.selection()
+        return sel[0] if sel else None
+
+    def _sync_freeze_button(self):
+        iid = self._selected_inventory_id()
+        frozen = bool(iid) and eng.is_unavailable(self.data, iid)
+        self.inv_freeze_btn.configure(text="Mark Available" if frozen else "Mark Unavailable")
+
+    def _toggle_unavailable(self):
+        """Freezes the selected row (couldn't be acquired) or thaws it again."""
+        iid = self._selected_inventory_id()
+        if not iid:
+            messagebox.showinfo("No selection", "Select an ingredient row first.")
+            return
+        eng.set_unavailable(self.data, iid, not eng.is_unavailable(self.data, iid))
         eng.save_data(self.data)
         self.refresh_all()
 
@@ -1418,13 +1433,18 @@ class LedgerApp(tk.Tk):
                 eng.save_data(self.data)
                 self.refresh_all()
             inline_edit_entry(tree, row_id, col, tree.set(row_id, col), commit)
-        elif col == "#4":  # To Order (free-text note, not used in any calculation)
-            def commit(raw, ing_id=row_id):
+        elif col == "#4":  # To Order: a typed note, or what What To Order says to get
+            shown = tree.set(row_id, col)
+
+            def commit(raw, ing_id=row_id, shown=shown):
+                text = raw.strip()
                 inv = self.data["inventory"].setdefault(ing_id, {"qty": 0, "preferredVendorId": None, "toOrder": ""})
-                inv["toOrder"] = raw.strip()
+                if text == shown and not (inv.get("toOrder") or "").strip():
+                    return      # untouched automatic quantity: don't turn it into a typed note
+                inv["toOrder"] = text
                 eng.save_data(self.data)
                 self.refresh_all()
-            inline_edit_entry(tree, row_id, col, tree.set(row_id, col), commit)
+            inline_edit_entry(tree, row_id, col, shown, commit)
         elif col == "#5":  # Preferred Source
             vendors_here = [v for v in self.data["vendors"] if v["ingredientId"] == row_id]
             options = ["cheapest available"] + [
@@ -1565,6 +1585,7 @@ class LedgerApp(tk.Tk):
             self.tab_planner, ["Ingredient", "Short", "Do This"], {"Ingredient": 140, "Do This": 420}, height=4,
         )
         order_frame.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+        configure_tier_tags(self.order_tree)     # red rows = marked unavailable on Raw Inventory
         self.order_items = {}
         self.order_tree.bind("<Control-c>", lambda e: self._copy_order_list(selected_only=True))
 
@@ -1791,6 +1812,8 @@ class LedgerApp(tk.Tk):
         stripe_tree(self.vendor_tree)
 
     def _refresh_inventory(self):
+        selected = self._selected_inventory_id()
+        needs = eng.order_needs(self.data)
         self.inv_tree.delete(*self.inv_tree.get_children())
         total = 0.0
         for iid in sorted(self.data["ingredients"], key=lambda i: self.data["ingredients"][i]["name"]):
@@ -1806,10 +1829,16 @@ class LedgerApp(tk.Tk):
             else:
                 pref_txt = "cheapest available"
             self.inv_tree.insert("", "end", iid=iid, values=(
-                ing["name"], ing["unit"], f"{inv.get('qty', 0):g}", inv.get("toOrder", ""), pref_txt,
+                ing["name"], ing["unit"], f"{inv.get('qty', 0):g}", eng.to_order_entry(self.data, iid, needs)["text"], pref_txt,
                 "NO PRICE" if res["warn"] else eng.fmt_money(res["cost"]), eng.fmt_money(value),
             ))
         stripe_tree(self.inv_tree)
+        for iid in self.inv_tree.get_children():
+            if eng.is_unavailable(self.data, iid):          # frozen rows show red
+                self.inv_tree.item(iid, tags=("tier_problematic",))
+        if selected and self.inv_tree.exists(selected):
+            self.inv_tree.selection_set(selected)
+        self._sync_freeze_button()
         self.inv_total_var.set(f"Total value: {eng.fmt_money(total)}")
 
     def _refresh_planner(self):
@@ -1831,15 +1860,22 @@ class LedgerApp(tk.Tk):
         order_total = 0.0
         self.order_tree.delete(*self.order_tree.get_children())
         self.order_items = {}
+        unavailable_rows = []
         for s in shortages:
             last = eng.resolve_purchase_steps(self.data, s["id"], s["shortage"])[-1]
             if last["type"] == "buy":
                 order_total += last["vendor"]["price"] * last["qty"]
             self.order_items[s["id"]] = (eng.ing_name(self.data, last["ingredientId"]), last["qty"])
+            blocked = eng.is_unavailable(self.data, last["ingredientId"])
+            if blocked:
+                unavailable_rows.append(s["id"])
             self.order_tree.insert("", "end", iid=s["id"], values=(
-                eng.ing_name(self.data, s["id"]), int(s["shortage"]), eng.order_line_text(self.data, s["id"], s["shortage"]),
+                eng.ing_name(self.data, s["id"]), int(s["shortage"]),
+                eng.order_line_text(self.data, s["id"], s["shortage"]) + ("  [marked unavailable]" if blocked else ""),
             ))
         stripe_tree(self.order_tree)
+        for rid in unavailable_rows:
+            self.order_tree.item(rid, tags=("tier_problematic",))
         self.order_total_var.set(f"Estimated spend: {eng.fmt_money(order_total)}")
 
 

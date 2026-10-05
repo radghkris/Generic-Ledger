@@ -217,6 +217,36 @@ def margin_tier(settings, margin):
     return "tight"
 
 
+def _conversion_for(data, ing_id):
+    """The conversion that makes this ingredient from another one, if stock may be
+    converted this way. Custom-cost ingredients (grown, foraged, made in-house)
+    are never converted."""
+    if data["ingredients"].get(ing_id, {}).get("costMode") == "custom":
+        return None
+    return next((c for c in data["conversions"] if c["outputId"] == ing_id and (c.get("outputQty") or 0) > 0), None)
+
+
+def _take(data, ing_id, qty, pool, visiting=()):
+    """Tries to cover `qty` of an ingredient from `pool` (spare stock by ingredient),
+    converting spare stock of its conversion input where needed. Takes what it
+    uses out of the pool and returns how much it covered."""
+    got = min(qty, pool.get(ing_id, 0))
+    pool[ing_id] = pool.get(ing_id, 0) - got
+    left = qty - got
+    conv = None if ing_id in visiting else _conversion_for(data, ing_id)
+    if left > 1e-9 and conv:
+        per_in = conv.get("inputQty") or 1
+        batches = math.ceil(round(left / conv["outputQty"], 9))
+        have_in = _take(data, conv["inputId"], batches * per_in, pool, visiting + (ing_id,))
+        whole = int(round(have_in / per_in, 9))
+        pool[conv["inputId"]] = pool.get(conv["inputId"], 0) + (have_in - whole * per_in)
+        made = whole * conv["outputQty"]
+        used = min(made, left)
+        pool[ing_id] = pool.get(ing_id, 0) + (made - used)
+        got += used
+    return got
+
+
 def compute_plan(data):
     rows, totals = [], {}
     for rid, r in data["recipes"].items():
@@ -234,9 +264,14 @@ def compute_plan(data):
             bucket["required"] += need
             bucket["recipeIds"].add(rid)
     shortages = []
-    for ing_id, d in totals.items():
+    # Stock beyond what recipes need directly is "free" and can be converted into
+    # whatever else is short (bulk supply on hand covers a portioned-supply shortage).
+    pool = {i: max(0, (inv.get("qty") or 0) - totals.get(i, {}).get("required", 0)) for i, inv in data["inventory"].items()}
+    for ing_id, d in sorted(totals.items()):
         on_hand = data["inventory"].get(ing_id, {}).get("qty", 0)
         shortage = max(0, d["required"] - on_hand)
+        if shortage > 0:
+            shortage = max(0, shortage - _take(data, ing_id, shortage, pool))
         shortages.append({"id": ing_id, "required": d["required"], "onHand": on_hand,
                           "shortage": shortage, "numRecipes": len(d["recipeIds"]),
                           "score": shortage * len(d["recipeIds"])})
@@ -313,9 +348,7 @@ def _consume(data, ing_id, need, shortfalls, notes, visiting=()):
         inv["qty"] = have - need
         return
     short = need - have
-    conv = None
-    if ing_id not in visiting and data["ingredients"].get(ing_id, {}).get("costMode") != "custom":
-        conv = next((c for c in data["conversions"] if c["outputId"] == ing_id and (c.get("outputQty") or 0) > 0), None)
+    conv = None if ing_id in visiting else _conversion_for(data, ing_id)
     if not conv:
         shortfalls.append(f"{ing_name(data, ing_id)} (had {have:g}, used {need:g})")
         inv["qty"] = 0.0
@@ -350,6 +383,83 @@ def apply_made(data, recipe_id, crafts, notes=None):
     c = crafted_entry(data, recipe_id)
     c["qty"] = (c.get("qty") or 0) + crafts * yield_qty
     return shortfalls
+
+
+def order_needs(data, plan=None):
+    """What has to be acquired right now, as {ingredient id: qty}. Each planner
+    shortage is resolved down to the thing you actually buy/hunt/make (Sugarcane,
+    not Sugar), and shortages that land on the same item are added together."""
+    plan = plan or compute_plan(data)
+    needs = {}
+    for s in plan["shortages"]:
+        if s["shortage"] <= 0:
+            continue
+        last = resolve_purchase_steps(data, s["id"], s["shortage"])[-1]
+        needs[last["ingredientId"]] = needs.get(last["ingredientId"], 0) + last["qty"]
+    return needs
+
+
+def is_unavailable(data, ing_id):
+    return bool(data["inventory"].get(ing_id, {}).get("unavailable"))
+
+
+def set_unavailable(data, ing_id, flag):
+    """Freezes (or un-freezes) an ingredient: it couldn't be acquired, so Mark
+    Order Received leaves its row alone."""
+    inv = data["inventory"].setdefault(ing_id, {"qty": 0, "preferredVendorId": None})
+    inv["unavailable"] = bool(flag)
+
+
+def to_order_entry(data, ing_id, needs):
+    """What the Raw Inventory 'To Order' column shows for an ingredient: the note
+    typed in by hand if there is one, otherwise the quantity What To Order says
+    to get. `text` is what is displayed ('' when there is nothing to order)."""
+    inv = data["inventory"].get(ing_id, {})
+    note = (inv.get("toOrder") or "").strip()
+    planned = needs.get(ing_id, 0)
+    return {"note": note, "planned": planned, "frozen": bool(inv.get("unavailable")),
+            "text": note or (f"{planned:g}" if planned > 0 else "")}
+
+
+def _by_name(data):
+    return sorted(data["ingredients"], key=lambda i: data["ingredients"][i]["name"])
+
+
+def plan_receipt(data, needs=None):
+    """Works out what Mark Order Received would do. Returns (to_add, unparsed,
+    frozen): to_add is [(id, name, qty, shown text)] to add to On Hand; unparsed
+    is [(name, note)] hand-typed notes with no number in them; frozen is
+    [(name, text)] rows marked unavailable, which are left completely alone."""
+    needs = order_needs(data) if needs is None else needs
+    to_add, unparsed, frozen = [], [], []
+    for iid in _by_name(data):
+        e = to_order_entry(data, iid, needs)
+        if not e["text"]:
+            continue
+        name = ing_name(data, iid)
+        if e["frozen"]:
+            frozen.append((name, e["text"]))
+            continue
+        qty = None
+        if e["note"]:
+            m = re.search(r"-?\d+(?:\.\d+)?", e["note"])
+            qty = float(m.group()) if m else None
+        else:
+            qty = e["planned"]
+        if qty and qty > 0:
+            to_add.append((iid, name, qty, e["text"]))
+        else:
+            unparsed.append((name, e["text"]))
+    return to_add, unparsed, frozen
+
+
+def apply_receipt(data, to_add):
+    """Adds each received quantity to On Hand and clears that row's typed note.
+    What To Order shrinks by itself: it's worked out from On Hand."""
+    for iid, _name, qty, _text in to_add:
+        inv = data["inventory"].setdefault(iid, {"qty": 0, "preferredVendorId": None})
+        inv["qty"] = (inv.get("qty") or 0) + qty
+        inv["toOrder"] = ""
 
 
 def add_to_receipt(order, recipe_id, qty):
