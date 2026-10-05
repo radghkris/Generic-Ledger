@@ -77,18 +77,37 @@ def _sort_key(raw):
         return (1, s.lower())
 
 
-def sort_tree_column(tree, col, reverse):
+def _reorder_by_sort(tree, col, reverse):
     items = [(tree.set(k, col), k) for k in tree.get_children("")]
     items.sort(key=lambda pair: _sort_key(pair[0]), reverse=reverse)
     for index, (_, k) in enumerate(items):
         tree.move(k, "", index)
+
+
+def sort_tree_column(tree, col, reverse):
+    """Header-click handler. Reorders only — never touches row tags, since some
+    trees (Recipes, Pricing Watch, Crafted Inventory) use tags for status coloring
+    rather than zebra striping."""
+    tree._sort_state = (col, reverse)
+    _reorder_by_sort(tree, col, reverse)
     tree.heading(col, command=lambda: sort_tree_column(tree, col, not reverse))
-    stripe_tree(tree)
+
+
+def restore_sort(tree):
+    """Call after repopulating a tree whose rows are colored by something other than
+    zebra striping (status tags) — reapplies the tree's last sort, if any, without
+    touching tags. Needed because every refresh fully deletes and re-inserts rows,
+    which would otherwise silently drop any sort the user clicked into place."""
+    state = getattr(tree, "_sort_state", None)
+    if state:
+        _reorder_by_sort(tree, *state)
 
 
 def stripe_tree(tree):
-    """Alternating row shading — ttk.Treeview has no true cell gridlines, so this is
-    what stands in for 'lined rows/columns' to keep wide tables readable."""
+    """Call after repopulating a plain zebra-striped tree — reapplies the last sort
+    (see restore_sort) and re-stripes; both must happen after every refresh since
+    rows are fully deleted and re-inserted each time."""
+    restore_sort(tree)
     for i, k in enumerate(tree.get_children("")):
         tree.item(k, tags=("even" if i % 2 == 0 else "odd",))
 
@@ -891,11 +910,13 @@ class LedgerApp(tk.Tk):
         self.tab_ing = ttk.Frame(self.notebook)
         self.tab_vendors = ttk.Frame(self.notebook)
         self.tab_inv = ttk.Frame(self.notebook)
+        self.tab_crafted = ttk.Frame(self.notebook)
         self.tab_planner = ttk.Frame(self.notebook)
         self.tab_settings = ttk.Frame(self.notebook)
         for frame, label in [
             (self.tab_dash, "Dashboard"), (self.tab_recipes, "Recipes"), (self.tab_ing, "Ingredients"),
-            (self.tab_vendors, "Vendors"), (self.tab_inv, "Inventory"), (self.tab_planner, "Planner"),
+            (self.tab_vendors, "Vendors"), (self.tab_inv, "Raw Inventory"), (self.tab_crafted, "Crafted Inventory"),
+            (self.tab_planner, "Planner"),
             (self.tab_settings, "Settings"),
         ]:
             self.notebook.add(frame, text=label)
@@ -905,6 +926,7 @@ class LedgerApp(tk.Tk):
         self._build_ingredients()
         self._build_vendors()
         self._build_inventory()
+        self._build_crafted()
         self._build_planner()
         self.settings_scroll = ScrollFrame(self.tab_settings)
         self.settings_scroll.pack(fill="both", expand=True)
@@ -991,6 +1013,7 @@ class LedgerApp(tk.Tk):
         name = self.data["recipes"][rid]["name"]
         if messagebox.askyesno("Delete recipe", f'Delete "{name}"?'):
             del self.data["recipes"][rid]
+            self.data.get("crafted", {}).pop(rid, None)
             eng.save_data(self.data)
             self.refresh_all()
 
@@ -1268,20 +1291,111 @@ class LedgerApp(tk.Tk):
                 self.refresh_all()
             inline_edit_combobox(tree, row_id, col, options, tree.set(row_id, col), commit)
 
+    # ---------- Crafted Inventory ----------
+    def _build_crafted(self):
+        top = ttk.Frame(self.tab_crafted, padding=(10, 10, 10, 0))
+        top.pack(fill="x")
+        hint = ttk.Label(top, text="Finished items on hand. Double-click On Hand or Set Point to edit — Enter saves, Esc cancels. "
+                                   "Set Point is how many you want to keep made up; the Planner uses it to work out what to make.",
+                         foreground=INK_DIM)
+        hint.pack(side="left")
+        self.crafted_total_var = tk.StringVar(value="")
+        ttk.Label(top, textvariable=self.crafted_total_var, font=(RESOLVED["body"], 10, "bold"), foreground=INK).pack(side="right", padx=(10, 0))
+        ttk.Button(top, text="Restock Planner to Set Points", command=self._restock_to_set_points).pack(side="right")
+        autowrap_toolbar(top, hint)
+
+        frame, self.crafted_tree = make_tree(
+            self.tab_crafted, ["Recipe", "Category", "On Hand", "Set Point", "Short", "Cost/Item", "Value"],
+            {"Recipe": 220}, height=18,
+        )
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        configure_tier_tags(self.crafted_tree)
+        self.crafted_tree.bind("<Double-1>", self._crafted_cell_click)
+
+    def _edit_crafted_field(self, rid, field, raw):
+        try:
+            value = max(0.0, float(raw))
+        except ValueError:
+            messagebox.showerror("Invalid number", "Enter a number.")
+            return
+        eng.crafted_entry(self.data, rid)[field] = value
+        eng.save_data(self.data)
+        self.refresh_all()
+
+    def _crafted_cell_click(self, event):
+        tree = self.crafted_tree
+        row_id = tree.identify_row(event.y)
+        col = tree.identify_column(event.x)
+        if not row_id or col not in ("#3", "#4"):
+            return
+        field = "qty" if col == "#3" else "setPoint"
+        inline_edit_entry(tree, row_id, col, tree.set(row_id, col),
+                          lambda raw, rid=row_id, f=field: self._edit_crafted_field(rid, f, raw))
+
+    def _refresh_crafted(self):
+        tree = self.crafted_tree
+        tree.delete(*tree.get_children())
+        total = 0.0
+        for rid, r in sorted(self.data["recipes"].items(), key=lambda kv: kv[1]["name"]):
+            c = self.data.get("crafted", {}).get(rid) or {}
+            have, point = c.get("qty") or 0, c.get("setPoint") or 0
+            m = eng.recipe_metrics(self.data, r)
+            value = have * m["costPerItem"]
+            total += value
+            short = eng.crafted_short(self.data, rid)
+            tree.insert("", "end", iid=rid, values=(
+                r["name"], r["category"], f"{have:g}", f"{point:g}", f"{short:g}" if short else "—",
+                eng.fmt_money(m["costPerItem"]), eng.fmt_money(value),
+            ))
+        restore_sort(tree)
+        for i, rid in enumerate(tree.get_children("")):
+            c = self.data.get("crafted", {}).get(rid) or {}
+            if eng.crafted_short(self.data, rid) > 0:
+                tag = "tier_problematic" if (c.get("qty") or 0) <= 0 else "tier_tight"
+            else:
+                tag = "even" if i % 2 == 0 else "odd"
+            tree.item(rid, tags=(tag,))
+        self.crafted_total_var.set(f"Stock value at cost: {eng.fmt_money(total)}")
+
+    def _restock_to_set_points(self):
+        """Points the Planner at the gap between each active recipe's set point and
+        what's made up. Recipes with no set point are left exactly as they are."""
+        gaps = []
+        for rid, r in self.data["recipes"].items():
+            point = (self.data.get("crafted", {}).get(rid) or {}).get("setPoint") or 0
+            if r.get("active") and point > 0:
+                gaps.append((rid, r["name"], eng.crafted_short(self.data, rid)))
+        if not gaps:
+            messagebox.showinfo("No set points", "No active recipe has a set point yet. Set them on the Crafted Inventory tab first.")
+            return
+        needed = sum(1 for _, _, g in gaps if g > 0)
+        if not messagebox.askyesno(
+            "Restock Planner",
+            f"{len(gaps)} active recipe(s) have a set point; {needed} are under it.\n\n"
+            "Their Planner targets will be set to the shortfall, and only the ones that are short will be enabled. "
+            "Recipes without a set point are left alone.\n\nContinue?"):
+            return
+        for rid, _, gap in gaps:
+            self.data["plan"]["targets"][rid] = {"enabled": gap > 0, "qty": gap}
+        eng.save_data(self.data)
+        self.refresh_all()
+        self.notebook.select(self.tab_planner)
+
     # ---------- Planner ----------
     def _build_planner(self):
         top = ttk.Frame(self.tab_planner, padding=(10, 10, 10, 0))
         top.pack(fill="x")
-        hint = ttk.Label(top, text="Double-click Enabled or Target Qty to edit in place.")
+        hint = ttk.Label(top, text="Double-click a cell to edit.")
         hint.pack(side="left")
         self.bulk_qty_var = tk.StringVar(value="100")
         ttk.Entry(top, textvariable=self.bulk_qty_var, width=8).pack(side="left", padx=(10, 4))
         ttk.Button(top, text="Set target for all enabled", command=self._bulk_apply).pack(side="left", padx=(0, 12))
-        ttk.Button(top, text="Mark Made…", command=self._mark_made).pack(side="left")
+        ttk.Button(top, text="Mark Made…", command=self._mark_made).pack(side="left", padx=(0, 12))
+        ttk.Button(top, text="Restock to Set Points", command=self._restock_to_set_points).pack(side="left")
         autowrap_toolbar(top, hint)
 
         plan_frame, self.plan_tree = make_tree(
-            self.tab_planner, ["Enabled", "Recipe", "Target Qty", "Crafts Needed", "Run Cost"],
+            self.tab_planner, ["Enabled", "Recipe", "In Stock", "Set Point", "Target Qty", "Crafts Needed", "Run Cost"],
             {"Recipe": 180}, height=4,
         )
         plan_frame.pack(fill="both", expand=True, padx=10, pady=(6, 6))
@@ -1331,7 +1445,10 @@ class LedgerApp(tk.Tk):
             self.data["plan"]["targets"][row_id] = t
             eng.save_data(self.data)
             self.refresh_all()
-        elif col == "#3":  # Target Qty
+        elif col in ("#3", "#4"):  # In Stock / Set Point (same finished-goods record as the Crafted tab)
+            inline_edit_entry(tree, row_id, col, tree.set(row_id, col),
+                              lambda raw, rid=row_id, f=("qty" if col == "#3" else "setPoint"): self._edit_crafted_field(rid, f, raw))
+        elif col == "#5":  # Target Qty
             def commit(raw, rid=row_id):
                 try:
                     qty = max(0.0, float(raw))
@@ -1381,6 +1498,8 @@ class LedgerApp(tk.Tk):
                   foreground=INK_DIM, wraplength=340, justify="left").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 8))
         crafts_var = tk.StringVar(value=str(default_crafts))
         ttk.Entry(form, textvariable=crafts_var, width=8).grid(row=2, column=0, sticky="w")
+        ttk.Label(form, text=f"Also adds the finished items ({yield_qty} per craft) to Crafted Inventory.",
+                  foreground=INK_DIM, wraplength=340, justify="left").grid(row=2, column=1, sticky="w", padx=(10, 0))
 
         def confirm():
             try:
@@ -1420,6 +1539,7 @@ class LedgerApp(tk.Tk):
         self._refresh_ingredients()
         self._refresh_vendors()
         self._refresh_inventory()
+        self._refresh_crafted()
         self._refresh_planner()
 
     def _refresh_dashboard(self):
@@ -1448,6 +1568,7 @@ class LedgerApp(tk.Tk):
             flag = ("OVER MAX, " if m["overCap"] else "") + m["tier"]
             self.watch_tree.insert("", "end", values=(r["name"], eng.fmt_money(m["costPerItem"]), eng.fmt_money(r["salePrice"]), flag),
                                     tags=(f"tier_{m['tier']}",))
+        restore_sort(self.watch_tree)
         stripe_tree(self.grow_tree)
 
     def _refresh_recipes(self):
@@ -1464,6 +1585,7 @@ class LedgerApp(tk.Tk):
                 eng.fmt_money(r["salePrice"]) + (" (over max)" if m["overCap"] else ""), eng.fmt_money(m["profit"]),
                 margin, tier, "Yes" if r["active"] else "No",
             ), tags=(f"tier_{m['tier']}",))
+        restore_sort(self.recipes_tree)
 
     def _refresh_ingredients(self):
         self.ing_tree.delete(*self.ing_tree.get_children())
@@ -1527,8 +1649,10 @@ class LedgerApp(tk.Tk):
         for rid, r in sorted(self.data["recipes"].items(), key=lambda kv: kv[1]["name"]):
             t = self.data["plan"]["targets"].get(rid, {"enabled": False, "qty": 0})
             run = run_by_id.get(rid)
+            c = self.data.get("crafted", {}).get(rid) or {}
             self.plan_tree.insert("", "end", iid=rid, values=(
-                "☑" if t.get("enabled") else "☐", r["name"], f"{t.get('qty', 0):g}",
+                "☑" if t.get("enabled") else "☐", r["name"], f"{c.get('qty') or 0:g}", f"{c.get('setPoint') or 0:g}",
+                f"{t.get('qty', 0):g}",
                 run["crafts"] if run else "—", eng.fmt_money(run["runCost"]) if run else "—",
             ))
         stripe_tree(self.plan_tree)
