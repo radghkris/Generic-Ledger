@@ -3,7 +3,78 @@ import math
 import re
 from pathlib import Path
 
-DATA_FILE = Path(__file__).resolve().parent / "ledger_data.json"
+BASE_DIR = Path(__file__).resolve().parent
+PROFILES_FILE = BASE_DIR / "ledger_profiles.json"
+FIRST_FILE = "ledger_data.json"       # the original business keeps its existing file
+
+
+def _read_profiles():
+    """{"active": file name, "files": [file names]}. Missing/damaged -> just the first business."""
+    try:
+        with open(PROFILES_FILE, "r", encoding="utf-8") as f:
+            p = json.load(f)
+        files = [n for n in p.get("files", []) if isinstance(n, str)]
+        if FIRST_FILE not in files:
+            files.insert(0, FIRST_FILE)
+        active = p.get("active") if p.get("active") in files else FIRST_FILE
+        return {"active": active, "files": files}
+    except (OSError, ValueError, AttributeError):
+        return {"active": FIRST_FILE, "files": [FIRST_FILE]}
+
+
+def _write_profiles(p):
+    with open(PROFILES_FILE, "w", encoding="utf-8") as f:
+        json.dump(p, f, indent=2)
+
+
+DATA_FILE = BASE_DIR / _read_profiles()["active"]
+
+
+def business_files():
+    """All business data files, first business first."""
+    return _read_profiles()["files"]
+
+
+def business_name(file_name):
+    """Display name for a data file, without creating or changing it."""
+    try:
+        with open(BASE_DIR / file_name, "r", encoding="utf-8") as f:
+            return json.load(f).get("settings", {}).get("businessName") or file_name
+    except (OSError, ValueError, AttributeError):
+        return "My Business" if file_name == FIRST_FILE else file_name
+
+
+def active_file_name():
+    return DATA_FILE.name
+
+
+def switch_business(file_name):
+    """Points load_data/save_data at another business and remembers the choice."""
+    global DATA_FILE
+    p = _read_profiles()
+    if file_name not in p["files"]:
+        raise ValueError(f"Unknown business file: {file_name}")
+    DATA_FILE = BASE_DIR / file_name
+    p["active"] = file_name
+    _write_profiles(p)
+
+
+def add_business(name):
+    """Creates a new empty business (seed data, given name), registers it and returns its file name."""
+    p = _read_profiles()
+    base = "ledger_data_" + re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    if base == "ledger_data_":
+        base = "ledger_data_business"
+    file_name, n = base + ".json", 2
+    while file_name in p["files"] or (BASE_DIR / file_name).exists():
+        file_name, n = f"{base}-{n}.json", n + 1
+    seed = json.loads(json.dumps(SEED))
+    seed["settings"]["businessName"] = name
+    with open(BASE_DIR / file_name, "w", encoding="utf-8") as f:
+        json.dump(seed, f, indent=2, ensure_ascii=False)
+    p["files"].append(file_name)
+    _write_profiles(p)
+    return file_name
 
 # Starting data for a brand-new install: one clearly-fake example product so
 # the mechanics (vendors, a conversion, a custom-cost/hand-made ingredient)

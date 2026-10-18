@@ -43,6 +43,10 @@ Open **Settings → Business Info** and set your business name, tagline, and ico
 
 Everything you enter is saved to `ledger_data.json`, created next to the scripts the first time you run either version — both read and write the same file. That file is your data; back it up or copy it between machines as needed. It's excluded from this repo (`.gitignore`).
 
+## Multiple businesses
+
+Two header buttons in the desktop app: **Add Business** (asks for a name, creates a fresh ledger and switches to it) and **Switch Business (name) ▾** (lists every business; pick one to swap). Each business has its own data file - the original stays `ledger_data.json`, new ones are `ledger_data_<name>.json` - and the app reopens on whichever you used last (remembered in `ledger_profiles.json`). Switching clears the Counter Order receipt. The browser (Streamlit) version opens the last-used business but has no switcher.
+
 ## What it does
 
 - **Dashboard** — shortages weighted by how many active recipes need them ("Acquire Next"), and recipes graded tight or problematic by profit margin (cutoffs are editable in Settings) or over your maximum sale price.

@@ -1045,6 +1045,11 @@ class LedgerApp(tk.Tk):
         # The button is packed first so a narrow window or high display scaling
         # clips the subtitle instead of pushing the button off the edge.
         ttk.Button(header, text="Counter Order", command=self._open_counter_order).pack(side="right")
+        ttk.Button(header, text="Add Business", command=self._add_business).pack(side="right", padx=(0, 6))
+        self.switch_btn = ttk.Menubutton(header)
+        self.switch_btn.pack(side="right", padx=(0, 6))
+        self.switch_menu = tk.Menu(self.switch_btn, tearoff=0)
+        self.switch_btn.configure(menu=self.switch_menu)
         self.title_label = ttk.Label(header, font=(display, 20), foreground=ACCENT)
         self.title_label.pack(side="left")
         self.subtitle_label = ttk.Label(header, foreground=INK_DIM)
@@ -1720,7 +1725,51 @@ class LedgerApp(tk.Tk):
         tagline = s.get("tagline", "")
         self.title(f"{name} — Ledger")
         self.title_label.configure(text=f"{icon} {name}")
-        self.subtitle_label.configure(text=f"  {tagline} — data saves to ledger_data.json" if tagline else "  data saves to ledger_data.json")
+        fname = eng.active_file_name()
+        self.subtitle_label.configure(text=f"  {tagline} — data saves to {fname}" if tagline else f"  data saves to {fname}")
+        self._rebuild_switch_menu()
+
+    def _rebuild_switch_menu(self):
+        name = self.data["settings"].get("businessName", "My Business")
+        self.switch_btn.configure(text=f"Switch Business ({name}) \u25be")
+        self.switch_menu.delete(0, "end")
+        active = eng.active_file_name()
+        for fn in eng.business_files():
+            label = eng.business_name(fn) if fn != active else name
+            self.switch_menu.add_command(
+                label=("\u2713 " if fn == active else "     ") + label,
+                command=lambda f=fn: self._switch_business(f))
+
+    def _switch_business(self, file_name):
+        if file_name == eng.active_file_name():
+            return
+        try:
+            eng.save_data(self.data)                 # every edit already saves; this is a safety net
+            eng.switch_business(file_name)
+            self.data = eng.load_data()
+        except Exception:
+            report_error(traceback.format_exc(), self, title="Couldn't switch business")
+            return
+        self.counter_order = []                      # a receipt belongs to one business
+        if self.counter_dialog is not None and self.counter_dialog.winfo_exists():
+            self.counter_dialog.destroy()
+        self.counter_dialog = None
+        self.apply_branding()
+        self.refresh_all()
+
+    def _add_business(self):
+        from tkinter import simpledialog
+        name = simpledialog.askstring("Add Business", "Name of the new business:", parent=self)
+        if not name or not name.strip():
+            return
+        try:
+            fn = eng.add_business(name.strip())
+        except Exception:
+            report_error(traceback.format_exc(), self, title="Couldn't add business")
+            return
+        self._switch_business(fn)
+        messagebox.showinfo("Business added", f"{name.strip()} is ready. It starts with a sample product - "
+                            "delete it once you've entered your own data. Use Switch Business to go back.")
 
     # ---------- refresh ----------
     def refresh_all(self):

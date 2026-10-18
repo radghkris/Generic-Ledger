@@ -5,3 +5,5 @@ error_log.txt
 .venv/
 venv/
 .version
+ledger_data_*.json
+ledger_profiles.json
