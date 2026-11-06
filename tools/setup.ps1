@@ -3,7 +3,8 @@
 #   setup.ps1 -Update   quiet update-if-newer, used by run_desktop.bat; never touches your data
 param(
     [switch]$Update,
-    [switch]$NoLaunch
+    [switch]$NoLaunch,
+    [string]$InstallDir          # skip the folder prompt and install here
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,6 +20,31 @@ $here = if ($PSScriptRoot) { Split-Path $PSScriptRoot -Parent } else { $null }
 $App  = if ($here -and (Test-Path (Join-Path $here 'desktop_app.py'))) { $here } else { $Default }
 $IsGitClone = Test-Path (Join-Path $App '.git')
 $StampFile  = Join-Path $App '.version'
+$Pointer    = Join-Path $env:APPDATA 'GenericLedger\install_path.txt'   # remembers a chosen location
+$RunningFromInstall = [bool]($here -and (Test-Path (Join-Path $here 'desktop_app.py')))
+
+function Select-InstallFolder {
+    # Default: where a previous install went, else the standard folder.
+    $suggest = $Default
+    if (Test-Path $Pointer) {
+        $prev = (Get-Content $Pointer -Raw).Trim()
+        if ($prev -and (Test-Path (Join-Path $prev 'desktop_app.py'))) { $suggest = $prev }
+    }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dlg.Description = "Choose where to install Generic Ledger.`nA 'GenericLedger' folder is created inside the folder you pick.`nClick OK to use: $suggest"
+        $dlg.ShowNewFolderButton = $true
+        $dlg.SelectedPath = Split-Path $suggest -Parent
+        $owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true }
+        if ($dlg.ShowDialog($owner) -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
+        $picked = $dlg.SelectedPath
+        if ((Split-Path $picked -Leaf) -eq 'GenericLedger' -or (Test-Path (Join-Path $picked 'desktop_app.py'))) { return $picked }
+        return (Join-Path $picked 'GenericLedger')
+    } catch {
+        return $suggest      # no dialog available (e.g. Server Core): use the default
+    }
+}
 
 function Say($msg) { if (-not $Update) { Write-Host $msg } }
 
@@ -97,8 +123,18 @@ function New-DesktopShortcut {
 }
 
 try {
+    if (-not $Update -and -not $RunningFromInstall) {
+        $chosen = if ($InstallDir) { $InstallDir } else { Select-InstallFolder }
+        if (-not $chosen) { Write-Host 'Setup cancelled - nothing was installed.'; exit 0 }
+        $App        = $chosen
+        $IsGitClone = Test-Path (Join-Path $App '.git')
+        $StampFile  = Join-Path $App '.version'
+        Say "Installing to $App"
+    }
     Sync-Files
     if ($Update) { exit 0 }
+    New-Item -ItemType Directory -Path (Split-Path $Pointer -Parent) -Force | Out-Null
+    Set-Content -Path $Pointer -Value $App
 
     if (-not (Find-Pythonw)) { Install-Python }
     if (-not (Find-Pythonw)) { throw 'Python could not be installed automatically. Install it from https://www.python.org/downloads/ (tick "Add python.exe to PATH") and run this again.' }

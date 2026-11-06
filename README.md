@@ -12,7 +12,7 @@ Two local Python versions, sharing the same logic (`ledger_engine.py`) and the s
 1. Download **[Install-Ledger.bat](https://raw.githubusercontent.com/radghkris/Generic-Ledger/main/Install-Ledger.bat)** (right-click the link, Save link as).
 2. Double-click it. It downloads the app, installs Python if the computer doesn't have it, puts a **Generic Ledger** shortcut on the Desktop, and starts the ledger.
 
-No Git, no command prompt. From then on, use the Desktop shortcut: each launch quietly checks for a newer version and installs it (your `ledger_data.json` is never touched; if you're offline it just starts). Installed to `%LOCALAPPDATA%\GenericLedger`.
+No Git, no command prompt. From then on, use the Desktop shortcut: each launch quietly checks for a newer version and installs it (your `ledger_data.json` is never touched; if you're offline it just starts). The installer asks where to put it (a folder picker, defaulting to `%LOCALAPPDATA%` - a `GenericLedger` folder is created inside whatever you pick). Re-running it later offers the same spot again. Cancel the picker to stop without installing.
 
 The manual routes below still work if you prefer them.
 
